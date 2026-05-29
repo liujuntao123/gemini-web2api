@@ -9,7 +9,13 @@ from socketserver import ThreadingMixIn
 from .config import CONFIG
 from .models import MODELS, resolve_model
 from .gemini import generate, generate_stream, log
-from .tools import messages_to_prompt, parse_tool_calls, google_contents_to_prompt, parse_google_function_calls
+from .tools import (
+    messages_to_prompt,
+    parse_tool_calls,
+    google_contents_to_prompt,
+    parse_google_function_calls,
+    google_tool_names,
+)
 from .multimodal import upload_image, fetch_image_bytes
 from . import __version__
 
@@ -18,6 +24,10 @@ def _usage(prompt: str, text: str) -> dict:
     p = len(prompt) // 4
     c = len(text or "") // 4
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
+
+
+def _short_id() -> str:
+    return uuid.uuid4().hex[:8]
 
 
 def _upload_images(images: list) -> list:
@@ -106,26 +116,28 @@ class GeminiHandler(BaseHTTPRequestHandler):
             pass
 
     def do_POST(self):
+        req_id = _short_id()
         try:
             if self.path.startswith("/v1/") and not self._authorized():
                 self.send_json({"error": {"message": "invalid api key"}}, 401)
                 return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b""
+            log(f"request {req_id}: POST {self.path} bytes={length}")
             if self.path == "/v1/chat/completions":
-                self._handle_chat(body)
+                self._handle_chat(body, req_id)
             elif self.path == "/v1/responses":
-                self._handle_responses(body)
+                self._handle_responses(body, req_id)
             elif ":generateContent" in self.path:
-                self._handle_google_generate(body, stream=False)
+                self._handle_google_generate(body, stream=False, req_id=req_id)
             elif ":streamGenerateContent" in self.path:
-                self._handle_google_generate(body, stream=True)
+                self._handle_google_generate(body, stream=True, req_id=req_id)
             else:
                 self.send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
-            log(f"POST error: {e}")
+            log(f"request {req_id}: POST error: {e}")
             try:
                 self.send_json({"error": {"message": str(e)}}, 500)
             except:
@@ -133,7 +145,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     # ─── /v1/chat/completions ─────────────────────────────────────────────────
 
-    def _handle_chat(self, body: bytes):
+    def _handle_chat(self, body: bytes, req_id: str):
         req = self._parse_body(body)
         if req is None:
             self.send_json({"error": {"message": "invalid JSON"}}, 400)
@@ -153,20 +165,29 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         stream = req.get("stream", False)
         cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        log(
+            f"request {req_id}: chat model={model_name} stream={stream} "
+            f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
+        )
 
         if stream and (not tools or tool_choice == "none"):
             try:
                 self._start_sse()
+                chunks = 0
+                total_chars = 0
                 for delta in generate_stream(prompt, model_id, think_mode, _upload_images(images), extra_fields):
                     chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                              "model": model_name, "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}]}
                     self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
                     self.wfile.flush()
+                    chunks += 1
+                    total_chars += len(delta)
                 end = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                        "model": model_name, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
                 self.wfile.write(f"data: {json.dumps(end)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
+                log(f"request {req_id}: chat stream done chunks={chunks} chars={total_chars}")
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
@@ -176,10 +197,15 @@ class GeminiHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
             return
+        log(f"request {req_id}: chat upstream text_len={len(text or '')}")
 
         tool_calls = None
         if tools and text and tool_choice != "none":
             text, tool_calls = parse_tool_calls(text)
+            log(
+                f"request {req_id}: chat parsed tool_calls={len(tool_calls or [])} "
+                f"text_len={len(text or '')}"
+            )
         msg = {"role": "assistant", "content": text or None}
         if tool_calls:
             msg["tool_calls"] = tool_calls
@@ -203,7 +229,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     # ─── /v1/responses (Codex CLI) ───────────────────────────────────────────
 
-    def _handle_responses(self, body: bytes):
+    def _handle_responses(self, body: bytes, req_id: str):
         req = self._parse_body(body)
         if req is None:
             self.send_json({"error": {"message": "invalid JSON"}}, 400)
@@ -261,16 +287,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
         if not prompt.strip():
             self.send_json({"error": {"message": "empty input"}}, 400)
             return
+        log(
+            f"request {req_id}: responses model={model_name} stream={bool(req.get('stream'))} "
+            f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
+        )
 
         try:
             text = generate(prompt, model_id, think_mode, _upload_images(images), extra_fields)
         except Exception as e:
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
             return
+        log(f"request {req_id}: responses upstream text_len={len(text or '')}")
 
         tool_calls = None
         if tools and text and tool_choice != "none":
             text, tool_calls = parse_tool_calls(text)
+            log(
+                f"request {req_id}: responses parsed tool_calls={len(tool_calls or [])} "
+                f"text_len={len(text or '')}"
+            )
 
         rid = f"resp_{uuid.uuid4().hex[:16]}"
         mid = f"msg_{uuid.uuid4().hex[:12]}"
@@ -310,7 +345,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     # ─── /v1beta/models (Google Gemini CLI) ──────────────────────────────────
 
-    def _handle_google_generate(self, body: bytes, stream: bool):
+    def _handle_google_generate(self, body: bytes, stream: bool, req_id: str):
         req = self._parse_body(body)
         if req is None:
             self.send_json({"error": {"message": "invalid JSON"}}, 400)
@@ -331,16 +366,22 @@ class GeminiHandler(BaseHTTPRequestHandler):
             return
 
         file_refs = _upload_images(images)
-        log(f"Google API: model={model_name} stream={stream} tools={has_tools} prompt_len={len(prompt)}")
+        allowed_tool_names = google_tool_names(req)
+        log(
+            f"request {req_id}: google model={model_name} stream={stream} tools={has_tools} "
+            f"tool_names={len(allowed_tool_names)} prompt_len={len(prompt)} images={len(images)}"
+        )
 
         if stream and not has_tools:
             try:
                 self._start_sse()
                 full_text = ""
+                chunks = 0
                 for delta in generate_stream(prompt, model_id, think_mode, file_refs, extra_fields):
                     if not delta:
                         continue
                     full_text += delta
+                    chunks += 1
                     chunk_obj = {
                         "candidates": [{"content": {"parts": [{"text": delta}], "role": "model"}, "index": 0}],
                         "modelVersion": model_name,
@@ -358,6 +399,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 }
                 self.wfile.write(f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode())
                 self.wfile.flush()
+                log(f"request {req_id}: google stream done chunks={chunks} chars={len(full_text)}")
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
@@ -367,13 +409,18 @@ class GeminiHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
             return
+        log(f"request {req_id}: google upstream text_len={len(text or '')}")
 
         if not text:
-            log("Warning: empty response from Gemini")
+            log(f"request {req_id}: warning empty response from Gemini")
 
         response_parts = []
         if has_tools and text:
-            clean_text, function_calls = parse_google_function_calls(text)
+            clean_text, function_calls = parse_google_function_calls(text, allowed_tool_names)
+            log(
+                f"request {req_id}: google parsed function_calls={len(function_calls)} "
+                f"text_len={len(clean_text or '')}"
+            )
             if function_calls:
                 if clean_text:
                     response_parts.append({"text": clean_text})

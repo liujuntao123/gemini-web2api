@@ -167,11 +167,15 @@ def _extract_texts_from_line(line: str) -> list:
 def extract_response_text(raw: str) -> str:
     """Parse full response to get final text."""
     last_text = ""
+    text_count = 0
     for line in raw.split("\n"):
         for t in _extract_texts_from_line(line):
+            text_count += 1
             if len(t) > len(last_text):
                 last_text = t
-    return clean_text(last_text)
+    cleaned = clean_text(last_text)
+    log(f"Gemini parse: raw_len={len(raw)} text_fragments={text_count} text_len={len(cleaned)}")
+    return cleaned
 
 
 def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None) -> str:
@@ -195,6 +199,8 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
             else:
                 resp = urllib.request.urlopen(req, context=ctx, timeout=CONFIG["request_timeout_sec"])
             raw = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", None) or getattr(resp, "code", None)
+            log(f"Gemini HTTP: status={status} raw_len={len(raw)}")
             return extract_response_text(raw)
         except Exception as e:
             last_err = e
@@ -221,19 +227,28 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
     for attempt in range(CONFIG["retry_attempts"]):
         try:
             prev_text = ""
+            chunks = 0
+            text_fragments = 0
             with client.stream("POST", url, content=body, headers=headers) as resp:
+                log(f"Gemini stream HTTP: status={resp.status_code}")
                 buf = ""
                 for chunk in resp.iter_text():
+                    chunks += 1
                     buf += chunk
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
                         for t in _extract_texts_from_line(line):
+                            text_fragments += 1
                             cleaned_text = clean_text(t)
                             if len(cleaned_text) > len(prev_text):
                                 delta = cleaned_text[len(prev_text):]
                                 if delta:
                                     yield delta
                                 prev_text = cleaned_text
+            log(
+                f"Gemini stream parse: chunks={chunks} "
+                f"text_fragments={text_fragments} text_len={len(prev_text)}"
+            )
             return
         except Exception as e:
             last_err = e

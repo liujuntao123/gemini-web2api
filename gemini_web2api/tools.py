@@ -247,13 +247,25 @@ def google_contents_to_prompt(req: dict) -> tuple:
     return "\n\n".join(p for p in parts if p), images
 
 
-def parse_google_function_calls(text: str) -> tuple:
+def google_tool_names(req: dict) -> set:
+    """Return declared Google native function names from a request."""
+    names = set()
+    for tool_group in req.get("tools") or []:
+        for fn in tool_group.get("functionDeclarations", []):
+            name = fn.get("name")
+            if name:
+                names.add(name)
+    return names
+
+
+def parse_google_function_calls(text: str, allowed_names: set = None) -> tuple:
     """Extract function_call blocks from model output.
 
     Handles 3 formats:
     1. ```function_call\\n{...}\\n``` (standard)
     2. function_call\\n{...} (without backticks)
-    3. Raw JSON with "name" + "args" keys
+    3. Raw JSON with "name" + "args" keys, only when the name matches a
+       declared tool. This avoids treating ordinary JSON answers as tool calls.
 
     Returns (clean_text, [{"name": ..., "args": ...}])
     """
@@ -273,10 +285,10 @@ def parse_google_function_calls(text: str) -> tuple:
             except (json.JSONDecodeError, KeyError):
                 pass
         clean = re.sub(pattern, '', clean, flags=re.DOTALL)
-    if not function_calls and clean.strip().startswith("{"):
+    if not function_calls and allowed_names and clean.strip().startswith("{"):
         try:
             data = json.loads(clean.strip())
-            if "name" in data and ("args" in data or "arguments" in data):
+            if data.get("name") in allowed_names and ("args" in data or "arguments" in data):
                 function_calls.append({
                     "name": data["name"],
                     "args": data.get("args", data.get("arguments", {})),
