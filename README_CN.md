@@ -16,7 +16,7 @@
 - **多模型**: Flash, Flash Thinking (2万字+输出), Pro, Auto, Lite
 - **思考深度**: 通过 `@think=N` 后缀调节 (0=最深, 4=最浅)
 - **联网搜索**: 内置互联网访问 (Gemini 原生搜索能力)
-- **跨平台**: 纯 Python, 无外部依赖
+- **跨平台**: 纯 Python 服务端, 依赖很少
 - **流式输出**: SSE Streaming 支持
 - **Codex CLI**: Responses API (`/v1/responses`) 兼容 OpenAI Codex
 - **Gemini CLI**: Google 原生 API (`/v1beta/models`) 兼容 Gemini CLI
@@ -24,10 +24,13 @@
 ## 快速开始
 
 ```bash
-python gemini_web2api.py
+pip install -r requirements.txt
+python -m gemini_web2api
 ```
 
 服务启动在 `http://localhost:8081/v1`.
+
+也可以在源码目录中继续使用兼容入口 `python gemini_web2api.py`。
 
 ## 客户端配置
 
@@ -147,20 +150,34 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
 ```bash
 cp config.example.json config.json
 docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json gemini-web2api
+docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro gemini-web2api
 ```
 
 或使用 Docker Compose:
+
+```powershell
+.\deploy.ps1
+```
+
+如需指定端口:
+
+```powershell
+.\deploy.ps1 -Port 18081
+```
+
+或手动执行:
 
 ```bash
 cp config.example.json config.json
 docker compose up -d
 ```
 
+部署后 Base URL 为 `http://localhost:18081/v1`。
+
 如需挂载 Cookie 文件:
 
 ```bash
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
+docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro -v ./cookie.txt:/app/cookie.txt:ro gemini-web2api
 ```
 
 此时 `config.json` 中设置 `"cookie_file": "/app/cookie.txt"`.
@@ -189,7 +206,7 @@ python gemini_web2api.py
 
 ## 已知限制
 
-- **不支持图片/多模态输入**: Gemini 的图片上传需要专有的 WIZ streaming RPC 协议 (ProcessFile), 无法在标准 HTTP 代理中实现. 发送图片会被忽略并返回提示.
+- **图片输入有限支持**: Google 原生 `inlineData` 图片会通过 Gemini Web 上传。OpenAI `image_url` 消息暂不上传, 会转换成文本提示。
 - **Pro/Ultra 非真实路由**: 无付费订阅 cookie 时, `gemini-3.1-pro` 实际路由到 Flash 模型. "Pro" 只是 UI 偏好标签.
 - **单轮对话**: 每次请求是独立对话, 多轮上下文通过在 prompt 中包含历史消息模拟.
 - **频率限制**: Google 可能限制高频请求, server 会自动重试但持续高负载可能被封.
@@ -197,7 +214,7 @@ python gemini_web2api.py
 ## 系统要求
 
 - Python 3.8+
-- 无外部依赖 (仅标准库)
+- `httpx>=0.25`, 用于真实流式传输
 - 需要能访问 `gemini.google.com` (部分地区需代理)
 
 ## 工作原理

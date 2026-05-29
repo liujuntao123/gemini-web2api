@@ -16,7 +16,7 @@ Convert Google Gemini's web interface into an OpenAI-compatible API. Zero authen
 - **Multiple Models**: Flash, Flash Thinking (20k+ char output), Pro, Auto, Lite
 - **Thinking Depth**: Adjustable via `@think=N` suffix (0=deepest, 4=shallowest)
 - **Web Search**: Built-in internet access (Gemini's native search)
-- **Cross-Platform**: Pure Python, no dependencies beyond stdlib
+- **Cross-Platform**: Pure Python server with a small dependency set
 - **Streaming**: SSE streaming support
 - **Codex CLI**: Responses API (`/v1/responses`) for OpenAI Codex integration
 - **Gemini CLI**: Google native API (`/v1beta/models`) for Gemini CLI compatibility
@@ -24,10 +24,13 @@ Convert Google Gemini's web interface into an OpenAI-compatible API. Zero authen
 ## Quick Start
 
 ```bash
-python gemini_web2api.py
+pip install -r requirements.txt
+python -m gemini_web2api
 ```
 
 Server starts at `http://localhost:8081/v1`.
+
+Running `python gemini_web2api.py` is also supported as a source-tree compatibility entry point.
 
 ## Client Configuration
 
@@ -147,20 +150,34 @@ When `api_keys` is `[]`, authentication is disabled. When one or more keys are s
 ```bash
 cp config.example.json config.json
 docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json gemini-web2api
+docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro gemini-web2api
 ```
 
 Or use Docker Compose:
+
+```powershell
+.\deploy.ps1
+```
+
+To override the host port:
+
+```powershell
+.\deploy.ps1 -Port 18081
+```
+
+Or run it manually:
 
 ```bash
 cp config.example.json config.json
 docker compose up -d
 ```
 
+After deployment, the Base URL is `http://localhost:18081/v1`.
+
 To mount a cookie file:
 
 ```bash
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
+docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro -v ./cookie.txt:/app/cookie.txt:ro gemini-web2api
 ```
 
 Set `"cookie_file": "/app/cookie.txt"` in `config.json`.
@@ -206,7 +223,7 @@ resp = client.chat.completions.create(
 
 ## Limitations
 
-- **No image/multimodal input**: Gemini's image upload requires a proprietary streaming RPC protocol (WIZ/ProcessFile) that cannot be replicated in a standard HTTP proxy. Image inputs in messages will be ignored with a note.
+- **Limited image input**: Google native `inlineData` image parts are uploaded through Gemini Web. OpenAI `image_url` message parts are not uploaded and are converted to a text note.
 - **Not real Pro/Ultra**: Without a paid subscription cookie, `gemini-3.1-pro` routes to the same Flash model. The "Pro" label is a UI preference, not a backend model switch.
 - **Single-turn only**: Each request is an independent conversation. Multi-turn context is simulated by including previous messages in the prompt.
 - **Rate limits**: Google may throttle high-frequency requests. The server retries automatically but sustained heavy use may be blocked.
@@ -214,7 +231,7 @@ resp = client.chat.completions.create(
 ## Requirements
 
 - Python 3.8+
-- No external dependencies (stdlib only)
+- `httpx>=0.25` for true streaming transport
 - Network access to `gemini.google.com` (proxy/VPN may be needed in some regions)
 
 ## How It Works

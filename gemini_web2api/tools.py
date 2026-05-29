@@ -92,7 +92,7 @@ def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> 
                     text_parts.append("[Note: Image input not supported in this API. Please describe the image in text.]")
                 elif c.get("type") == "image":
                     text_parts.append("[Note: Image input not supported in this API. Please describe the image in text.]")
-            content = " ".join(text_parts)
+            content = "\n".join(text_parts)
 
         if role == "system":
             parts.append(f"[System instruction]: {content}")
@@ -139,7 +139,7 @@ def parse_tool_calls(text: str) -> tuple:
         except (json.JSONDecodeError, KeyError):
             pass
     clean_parts.append(text[last_end:])
-    clean = "".join(clean_parts).strip()
+    clean = "".join(clean_parts)
     return clean, tool_calls
 
 
@@ -207,7 +207,7 @@ def google_contents_to_prompt(req: dict) -> tuple:
     sys_inst = req.get("systemInstruction")
     if sys_inst:
         sys_parts = sys_inst.get("parts", [])
-        sys_text = " ".join(p.get("text", "") for p in sys_parts if p.get("text"))
+        sys_text = "\n".join(p.get("text", "") for p in sys_parts if p.get("text"))
         if sys_text:
             if tool_defs:
                 constraint = _google_tool_choice_instruction(req)
@@ -272,7 +272,7 @@ def parse_google_function_calls(text: str) -> tuple:
                     })
             except (json.JSONDecodeError, KeyError):
                 pass
-        clean = re.sub(pattern, '', clean, flags=re.DOTALL).strip()
+        clean = re.sub(pattern, '', clean, flags=re.DOTALL)
     if not function_calls and clean.strip().startswith("{"):
         try:
             data = json.loads(clean.strip())

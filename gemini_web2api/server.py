@@ -249,7 +249,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                         role = item.get("role", "user")
                         content = item.get("content", "")
                         if isinstance(content, list):
-                            content = " ".join(c.get("text", "") for c in content if c.get("type") in ("text", "input_text"))
+                            content = "\n".join(c.get("text", "") for c in content if c.get("type") in ("text", "input_text"))
                         messages.append({"role": role, "content": content})
 
         if tools:

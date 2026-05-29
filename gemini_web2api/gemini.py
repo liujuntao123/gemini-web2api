@@ -132,13 +132,13 @@ def _get_url() -> str:
     )
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, strip_edges: bool = False) -> str:
     text = re.sub(
         r'```(?:python|javascript|text)\?code_(?:reference|stdout)&code_event_index=\d+\n.*?```\n?',
         '', text, flags=re.DOTALL
     )
     text = re.sub(r'http://googleusercontent\.com/card_content/\d+\n?', '', text)
-    return text.strip()
+    return text.strip() if strip_edges else text
 
 
 def _extract_texts_from_line(line: str) -> list:
@@ -228,11 +228,12 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
                         for t in _extract_texts_from_line(line):
-                            if len(t) > len(prev_text):
-                                delta = clean_text(t[len(prev_text):])
+                            cleaned_text = clean_text(t)
+                            if len(cleaned_text) > len(prev_text):
+                                delta = cleaned_text[len(prev_text):]
                                 if delta:
                                     yield delta
-                                prev_text = t
+                                prev_text = cleaned_text
             return
         except Exception as e:
             last_err = e
