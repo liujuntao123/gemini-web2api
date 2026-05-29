@@ -136,6 +136,7 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
+  "max_request_body_bytes": 10485760,
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,

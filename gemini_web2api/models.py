@@ -42,12 +42,16 @@ def resolve_model(model_name: str, default: str = "gemini-3.5-flash"):
     since upstream clients may request arbitrary model identifiers.
     """
     think_override = None
+    if not isinstance(model_name, str) or not model_name:
+        model_name = default
     if "@think=" in model_name:
         model_name, think_str = model_name.rsplit("@think=", 1)
         try:
             think_override = int(think_str)
         except ValueError:
             return None, None, None, f"Invalid think level: {think_str}", None
+        if think_override < 0 or think_override > 4:
+            return None, None, None, f"Invalid think level: {think_override}", None
     cfg = MODELS.get(model_name)
     if not cfg:
         from .gemini import log

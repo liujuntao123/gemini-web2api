@@ -3,32 +3,7 @@ import json
 import re
 import uuid
 import base64
-import io
-
-MAX_IMAGE_B64_SIZE = 50000  # ~37KB raw image
-
-
-def _compress_b64_if_needed(b64: str) -> str:
-    """Compress image if base64 is too large for text embedding."""
-    if len(b64) <= MAX_IMAGE_B64_SIZE:
-        return b64
-    try:
-        from PIL import Image
-        img_data = base64.b64decode(b64)
-        img = Image.open(io.BytesIO(img_data))
-        # Resize to max 256px on longest side
-        max_dim = 256
-        ratio = min(max_dim / img.width, max_dim / img.height)
-        if ratio < 1:
-            img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
-        # Convert to JPEG with quality reduction
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=60)
-        compressed = base64.b64encode(buf.getvalue()).decode()
-        return compressed
-    except Exception:
-        # If PIL not available, truncate (model will get partial data)
-        return b64[:MAX_IMAGE_B64_SIZE]
+import binascii
 
 
 def _build_tool_choice_instruction(tool_choice, tool_defs: list) -> str:
@@ -80,12 +55,16 @@ def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> 
             )
 
     for msg in messages:
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "user")
         content = msg.get("content", "")
 
         if isinstance(content, list):
             text_parts = []
             for c in content:
+                if not isinstance(c, dict):
+                    continue
                 if c.get("type") in ("text", "input_text"):
                     text_parts.append(c.get("text", ""))
                 elif c.get("type") == "image_url":
@@ -124,8 +103,6 @@ def parse_tool_calls(text: str) -> tuple:
     clean_parts = []
     last_end = 0
     for m in re.finditer(pattern, text, re.DOTALL):
-        clean_parts.append(text[last_end:m.start()])
-        last_end = m.end()
         try:
             data = json.loads(m.group(1).strip())
             tool_calls.append({
@@ -136,6 +113,8 @@ def parse_tool_calls(text: str) -> tuple:
                     "arguments": json.dumps(data.get("arguments", {}), ensure_ascii=False),
                 },
             })
+            clean_parts.append(text[last_end:m.start()])
+            last_end = m.end()
         except (json.JSONDecodeError, KeyError):
             pass
     clean_parts.append(text[last_end:])
@@ -219,15 +198,22 @@ def google_contents_to_prompt(req: dict) -> tuple:
         parts.append(build_tool_prompt(tool_defs) + constraint)
 
     for content in req.get("contents", []):
+        if not isinstance(content, dict):
+            continue
         role = content.get("role", "user")
         msg_parts = []
         for p in content.get("parts", []):
+            if not isinstance(p, dict):
+                continue
             if p.get("text"):
                 msg_parts.append(p["text"])
             elif p.get("inlineData"):
                 data = p["inlineData"]
                 mime = data.get("mimeType", "image/png")
-                images.append((base64.b64decode(data["data"]), mime))
+                try:
+                    images.append((base64.b64decode(data["data"], validate=True), mime))
+                except (KeyError, TypeError, binascii.Error, ValueError):
+                    msg_parts.append("[Note: Invalid image input was ignored.]")
             elif p.get("functionCall"):
                 fc = p["functionCall"]
                 msg_parts.append(
@@ -274,17 +260,22 @@ def parse_google_function_calls(text: str, allowed_names: set = None) -> tuple:
     pattern2 = r'(?:^|\n)function_call\s*\n(\{[^`]*?\})'
     clean = text
     for pattern in [pattern1, pattern2]:
-        for match in re.findall(pattern, clean, re.DOTALL):
+        clean_parts = []
+        last_end = 0
+        for match in re.finditer(pattern, clean, re.DOTALL):
             try:
-                data = json.loads(match.strip())
+                data = json.loads(match.group(1).strip())
                 if "name" in data:
                     function_calls.append({
                         "name": data["name"],
                         "args": data.get("args", data.get("arguments", {})),
                     })
+                    clean_parts.append(clean[last_end:match.start()])
+                    last_end = match.end()
             except (json.JSONDecodeError, KeyError):
                 pass
-        clean = re.sub(pattern, '', clean, flags=re.DOTALL)
+        clean_parts.append(clean[last_end:])
+        clean = "".join(clean_parts)
     if not function_calls and allowed_names and clean.strip().startswith("{"):
         try:
             data = json.loads(clean.strip())

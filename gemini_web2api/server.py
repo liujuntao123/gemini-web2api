@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 import re
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -28,6 +29,31 @@ def _usage(prompt: str, text: str) -> dict:
 
 def _short_id() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def _json_object(body: bytes):
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _max_request_body_bytes() -> int:
+    try:
+        value = int(CONFIG.get("max_request_body_bytes", 10 * 1024 * 1024))
+    except (TypeError, ValueError):
+        return 10 * 1024 * 1024
+    return value if value > 0 else 10 * 1024 * 1024
+
+
+def _configured_api_keys() -> set:
+    keys = CONFIG.get("api_keys") or []
+    if isinstance(keys, str):
+        keys = [keys]
+    if not isinstance(keys, (list, tuple, set)):
+        return set()
+    return {str(key) for key in keys if key}
 
 
 def _upload_images(images: list) -> list:
@@ -71,13 +97,10 @@ class GeminiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _parse_body(self, body: bytes) -> dict:
-        try:
-            return json.loads(body)
-        except (json.JSONDecodeError, ValueError):
-            return None
+        return _json_object(body)
 
     def _authorized(self):
-        keys = CONFIG.get("api_keys") or []
+        keys = _configured_api_keys()
         if not keys:
             return True
         auth = self.headers.get("Authorization", "")
@@ -93,22 +116,23 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            if self.path.startswith("/v1/") and not self._authorized():
+            path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/v1/") and not self._authorized():
                 self.send_json({"error": {"message": "invalid api key"}}, 401)
                 return
-            if self.path == "/v1/models":
+            if path == "/v1/models":
                 self.send_json({"object": "list", "data": [
                     {"id": n, "object": "model", "created": 1700000000,
                      "owned_by": "google", "description": c["desc"]}
                     for n, c in MODELS.items()
                 ]})
-            elif self.path.startswith("/v1beta/models"):
+            elif path.startswith("/v1beta/models"):
                 self.send_json({"models": [
                     {"name": f"models/{n}", "displayName": n, "description": c["desc"],
                      "supportedGenerationMethods": ["generateContent", "streamGenerateContent"]}
                     for n, c in MODELS.items()
                 ]})
-            elif self.path == "/":
+            elif path == "/":
                 self.send_json({"status": "ok", "version": __version__, "models": list(MODELS.keys())})
             else:
                 self.send_json({"error": "not found"}, 404)
@@ -118,19 +142,32 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         req_id = _short_id()
         try:
-            if self.path.startswith("/v1/") and not self._authorized():
+            path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/v1/") and not self._authorized():
                 self.send_json({"error": {"message": "invalid api key"}}, 401)
                 return
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                self.send_json({"error": {"message": "invalid Content-Length"}}, 400)
+                return
+            if length < 0:
+                self.send_json({"error": {"message": "invalid Content-Length"}}, 400)
+                return
+            max_body = _max_request_body_bytes()
+            if length > max_body:
+                log(f"request {req_id}: payload too large bytes={length} limit={max_body}")
+                self.send_json({"error": {"message": "request body too large"}}, 413)
+                return
             body = self.rfile.read(length) if length else b""
-            log(f"request {req_id}: POST {self.path} bytes={length}")
-            if self.path == "/v1/chat/completions":
+            log(f"request {req_id}: POST {path} bytes={length}")
+            if path == "/v1/chat/completions":
                 self._handle_chat(body, req_id)
-            elif self.path == "/v1/responses":
+            elif path == "/v1/responses":
                 self._handle_responses(body, req_id)
-            elif ":generateContent" in self.path:
+            elif ":generateContent" in path:
                 self._handle_google_generate(body, stream=False, req_id=req_id)
-            elif ":streamGenerateContent" in self.path:
+            elif ":streamGenerateContent" in path:
                 self._handle_google_generate(body, stream=True, req_id=req_id)
             else:
                 self.send_json({"error": "not found"}, 404)
@@ -140,7 +177,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             log(f"request {req_id}: POST error: {e}")
             try:
                 self.send_json({"error": {"message": str(e)}}, 500)
-            except:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
 
     # ─── /v1/chat/completions ─────────────────────────────────────────────────
@@ -350,7 +387,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
         if req is None:
             self.send_json({"error": {"message": "invalid JSON"}}, 400)
             return
-        m = re.match(r'/v1beta/models/([^:?]+)', self.path)
+        path = urllib.parse.urlsplit(self.path).path
+        m = re.match(r'/v1beta/models/([^:?]+)', path)
         model_name = m.group(1) if m else CONFIG["default_model"]
         model_name, model_id, think_mode, err, extra_fields = resolve_model(model_name)
         if err:

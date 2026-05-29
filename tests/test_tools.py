@@ -1,4 +1,8 @@
-from gemini_web2api.tools import parse_google_function_calls
+from gemini_web2api.tools import (
+    google_contents_to_prompt,
+    parse_google_function_calls,
+    parse_tool_calls,
+)
 
 
 def test_plain_json_answer_is_not_function_call_without_allowed_tool_name():
@@ -28,3 +32,54 @@ def test_explicit_function_call_block_is_function_call():
 
     assert clean == ""
     assert calls == [{"name": "status", "args": {"ok": True}}]
+
+
+def test_invalid_tool_call_block_preserves_text():
+    text = 'before\n```tool_call\n{"name":\n```\nafter'
+
+    clean, calls = parse_tool_calls(text)
+
+    assert clean == text
+    assert calls == []
+
+
+def test_invalid_google_function_call_block_preserves_text():
+    text = 'before\n```function_call\n{"name":\n```\nafter'
+
+    clean, calls = parse_google_function_calls(text, {"status"})
+
+    assert clean == text
+    assert calls == []
+
+
+def test_invalid_inline_data_becomes_prompt_note():
+    prompt, images = google_contents_to_prompt({
+        "contents": [{
+            "role": "user",
+            "parts": [{"inlineData": {"mimeType": "image/png", "data": "not-base64"}}],
+        }],
+    })
+
+    assert "Invalid image input was ignored" in prompt
+    assert images == []
+
+
+def test_non_dict_content_parts_are_ignored():
+    prompt, images = google_contents_to_prompt({
+        "contents": [{
+            "role": "user",
+            "parts": ["bad", {"text": "hello"}],
+        }],
+    })
+
+    assert prompt == "hello"
+    assert images == []
+
+
+def test_non_dict_messages_are_ignored():
+    prompt, images = google_contents_to_prompt({
+        "contents": ["bad", {"role": "user", "parts": [{"text": "hello"}]}],
+    })
+
+    assert prompt == "hello"
+    assert images == []

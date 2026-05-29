@@ -8,6 +8,7 @@ DEFAULT_CONFIG = {
     "retry_attempts": 3,
     "retry_delay_sec": 2,
     "request_timeout_sec": 180,
+    "max_request_body_bytes": 10 * 1024 * 1024,
     "gemini_bl": "boq_assistant-bard-web-server_20260525.09_p0",
     "default_model": "gemini-3.5-flash",
     "log_requests": True,
@@ -22,8 +23,11 @@ CONFIG = dict(DEFAULT_CONFIG)
 def load_config(path: str = None):
     """Load config from JSON file."""
     if path and os.path.exists(path):
-        with open(path) as f:
-            CONFIG.update(json.load(f))
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("config file must contain a JSON object")
+        CONFIG.update(data)
     return CONFIG
 
 

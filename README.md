@@ -136,6 +136,7 @@ Create `config.json` in the same directory:
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
+  "max_request_body_bytes": 10485760,
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,

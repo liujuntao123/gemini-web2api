@@ -5,6 +5,7 @@ import uuid
 import re
 import urllib.request
 import urllib.parse
+import urllib.error
 import ssl
 import os
 import hashlib
@@ -54,7 +55,7 @@ def load_cookie() -> tuple:
         mtime = os.path.getmtime(cookie_file)
         if mtime == _cookie_cache["mtime"] and _cookie_cache["str"]:
             return _cookie_cache["str"], _cookie_cache["sapisid"]
-        with open(cookie_file, "r") as f:
+        with open(cookie_file, "r", encoding="utf-8") as f:
             content = f.read().strip()
         if content.startswith("{"):
             data = json.loads(content)
@@ -202,6 +203,12 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
             status = getattr(resp, "status", None) or getattr(resp, "code", None)
             log(f"Gemini HTTP: status={status} raw_len={len(raw)}")
             return extract_response_text(raw)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+            last_err = RuntimeError(f"Gemini HTTP {e.code}: {body}")
+            if attempt < CONFIG["retry_attempts"] - 1:
+                log(f"Retry {attempt+1}/{CONFIG['retry_attempts']}: {last_err}")
+                time.sleep(CONFIG["retry_delay_sec"])
         except Exception as e:
             last_err = e
             if attempt < CONFIG["retry_attempts"] - 1:
@@ -231,6 +238,7 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
             text_fragments = 0
             with client.stream("POST", url, content=body, headers=headers) as resp:
                 log(f"Gemini stream HTTP: status={resp.status_code}")
+                resp.raise_for_status()
                 buf = ""
                 for chunk in resp.iter_text():
                     chunks += 1
