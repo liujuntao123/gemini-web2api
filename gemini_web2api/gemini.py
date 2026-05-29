@@ -23,6 +23,14 @@ _cookie_cache = {"str": "", "sapisid": None, "mtime": 0}
 _httpx_client = None
 
 
+class EmptyGeminiResponse(RuntimeError):
+    """Raised when Gemini returns no parseable text fragments."""
+
+
+class GeminiUpstreamError(RuntimeError):
+    """Raised when Gemini returns a structured upstream error payload."""
+
+
 def log(msg: str):
     if CONFIG["log_requests"]:
         import sys
@@ -144,12 +152,12 @@ def clean_text(text: str, strip_edges: bool = False) -> str:
 
 def _extract_texts_from_line(line: str) -> list:
     """Parse a single wrb.fr line and return list of text strings found."""
-    if '"wrb.fr"' not in line or len(line) < 200:
+    if '"wrb.fr"' not in line:
         return []
     try:
         arr = json.loads(line)
         inner_str = arr[0][2]
-        if not inner_str or len(inner_str) < 50:
+        if not inner_str:
             return []
         inner = json.loads(inner_str)
         if not (isinstance(inner, list) and len(inner) > 4 and inner[4]):
@@ -165,8 +173,52 @@ def _extract_texts_from_line(line: str) -> list:
         return []
 
 
+def _response_diagnostics(raw: str) -> str:
+    error_codes = _extract_bard_error_codes(raw)
+    error_part = f" bard_error_codes={error_codes}" if error_codes else ""
+    return (
+        f"raw_len={len(raw)} lines={raw.count(chr(10)) + 1 if raw else 0} "
+        f"wrb_count={raw.count('wrb.fr')} has_af_init={'AF_initDataCallback' in raw}"
+        f"{error_part}"
+    )
+
+
+def _extract_bard_error_codes(raw: str) -> list:
+    codes = []
+    for line in raw.split("\n"):
+        if "BardErrorInfo" not in line:
+            continue
+        try:
+            arr = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stack = [arr]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                if item and item[0] == "type.googleapis.com/assistant.boq.bard.application.BardErrorInfo":
+                    payload = item[1] if len(item) > 1 else None
+                    if isinstance(payload, list) and payload and isinstance(payload[0], int):
+                        codes.append(payload[0])
+                stack.extend(item)
+            elif isinstance(item, dict):
+                stack.extend(item.values())
+    return codes
+
+
+def _raise_for_upstream_error(raw: str):
+    codes = _extract_bard_error_codes(raw)
+    if not codes:
+        return
+    hint = ""
+    if 1099 in codes:
+        hint = " (Gemini rejected the request; prompt is likely too large)"
+    raise GeminiUpstreamError(f"Gemini BardErrorInfo codes={codes}{hint}")
+
+
 def extract_response_text(raw: str) -> str:
     """Parse full response to get final text."""
+    _raise_for_upstream_error(raw)
     last_text = ""
     text_count = 0
     for line in raw.split("\n"):
@@ -176,6 +228,8 @@ def extract_response_text(raw: str) -> str:
                 last_text = t
     cleaned = clean_text(last_text)
     log(f"Gemini parse: raw_len={len(raw)} text_fragments={text_count} text_len={len(cleaned)}")
+    if text_count == 0:
+        raise EmptyGeminiResponse(f"no parseable text fragments ({_response_diagnostics(raw)})")
     return cleaned
 
 
@@ -236,12 +290,14 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
             prev_text = ""
             chunks = 0
             text_fragments = 0
+            raw_parts = []
             with client.stream("POST", url, content=body, headers=headers) as resp:
                 log(f"Gemini stream HTTP: status={resp.status_code}")
                 resp.raise_for_status()
                 buf = ""
                 for chunk in resp.iter_text():
                     chunks += 1
+                    raw_parts.append(chunk)
                     buf += chunk
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
@@ -253,10 +309,23 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
                                 if delta:
                                     yield delta
                                 prev_text = cleaned_text
+                if buf:
+                    for t in _extract_texts_from_line(buf):
+                        text_fragments += 1
+                        cleaned_text = clean_text(t)
+                        if len(cleaned_text) > len(prev_text):
+                            delta = cleaned_text[len(prev_text):]
+                            if delta:
+                                yield delta
+                            prev_text = cleaned_text
             log(
                 f"Gemini stream parse: chunks={chunks} "
                 f"text_fragments={text_fragments} text_len={len(prev_text)}"
             )
+            if text_fragments == 0:
+                raw = "".join(raw_parts)
+                _raise_for_upstream_error(raw)
+                raise EmptyGeminiResponse(f"no parseable text fragments ({_response_diagnostics(raw)})")
             return
         except Exception as e:
             last_err = e

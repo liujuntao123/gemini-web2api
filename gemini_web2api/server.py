@@ -96,6 +96,12 @@ class GeminiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
+    def _write_sse_error(self, message: str):
+        payload = {"error": {"message": message}}
+        self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
     def _parse_body(self, body: bytes) -> dict:
         return _json_object(body)
 
@@ -209,10 +215,29 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         if stream and (not tools or tool_choice == "none"):
             try:
-                self._start_sse()
                 chunks = 0
                 total_chars = 0
-                for delta in generate_stream(prompt, model_id, think_mode, _upload_images(images), extra_fields):
+                stream_iter = generate_stream(prompt, model_id, think_mode, _upload_images(images), extra_fields)
+                try:
+                    first_delta = next(stream_iter)
+                except StopIteration:
+                    log(f"request {req_id}: chat stream empty before headers")
+                    self.send_json({"error": {"message": "empty upstream response"}}, 502)
+                    return
+                except Exception as e:
+                    log(f"request {req_id}: chat stream upstream error before headers: {e}")
+                    self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+                    return
+
+                self._start_sse()
+                for delta in [first_delta]:
+                    chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                             "model": model_name, "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}]}
+                    self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+                    chunks += 1
+                    total_chars += len(delta)
+                for delta in stream_iter:
                     chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                              "model": model_name, "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}]}
                     self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
@@ -227,6 +252,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 log(f"request {req_id}: chat stream done chunks={chunks} chars={total_chars}")
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception as e:
+                log(f"request {req_id}: chat stream upstream error after headers: {e}")
+                self._write_sse_error(f"upstream error: {e}")
             return
 
         try:
@@ -412,10 +440,33 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         if stream and not has_tools:
             try:
-                self._start_sse()
                 full_text = ""
                 chunks = 0
-                for delta in generate_stream(prompt, model_id, think_mode, file_refs, extra_fields):
+                stream_iter = generate_stream(prompt, model_id, think_mode, file_refs, extra_fields)
+                try:
+                    first_delta = next(stream_iter)
+                except StopIteration:
+                    log(f"request {req_id}: google stream empty before headers")
+                    self.send_json({"error": {"message": "empty upstream response"}}, 502)
+                    return
+                except Exception as e:
+                    log(f"request {req_id}: google stream upstream error before headers: {e}")
+                    self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+                    return
+
+                self._start_sse()
+                for delta in [first_delta]:
+                    if not delta:
+                        continue
+                    full_text += delta
+                    chunks += 1
+                    chunk_obj = {
+                        "candidates": [{"content": {"parts": [{"text": delta}], "role": "model"}, "index": 0}],
+                        "modelVersion": model_name,
+                    }
+                    self.wfile.write(f"data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+                for delta in stream_iter:
                     if not delta:
                         continue
                     full_text += delta
@@ -440,6 +491,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 log(f"request {req_id}: google stream done chunks={chunks} chars={len(full_text)}")
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception as e:
+                log(f"request {req_id}: google stream upstream error after headers: {e}")
+                self._write_sse_error(f"upstream error: {e}")
             return
 
         try:
