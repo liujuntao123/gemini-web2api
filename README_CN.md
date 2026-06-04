@@ -146,6 +146,8 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
 
 `api_keys` 为空数组 `[]` 时不校验密钥；填入一个或多个密钥后, `/v1/*` 接口需要 `Authorization: Bearer <key>` 或 `x-api-key: <key>`.
 
+`max_request_body_bytes` 是本服务对传入 JSON 请求体设置的本地安全上限。客户端发送较长历史消息或较大的 tools schema 时可以调大；设置为 `0`/`null` 可关闭本地限制。但特别大的 prompt 仍可能被 Gemini Web 上游或模型上下文限制拒绝。
+
 ## Docker 部署
 
 ```bash

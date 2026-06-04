@@ -32,3 +32,13 @@ def test_extract_response_text_raises_structured_bard_error():
 
     with pytest.raises(GeminiUpstreamError, match="1099"):
         extract_response_text(raw)
+
+
+def test_extract_response_text_marks_1152_as_prompt_rejection():
+    raw = (
+        '[["wrb.fr",null,null,null,null,[13,null,'
+        '[["type.googleapis.com/assistant.boq.bard.application.BardErrorInfo",[1152]]]]]]'
+    )
+
+    with pytest.raises(GeminiUpstreamError, match="prompt is likely too large"):
+        extract_response_text(raw)

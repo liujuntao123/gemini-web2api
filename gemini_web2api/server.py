@@ -4,6 +4,7 @@ import time
 import uuid
 import re
 import urllib.parse
+from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -39,12 +40,55 @@ def _json_object(body: bytes):
     return data if isinstance(data, dict) else None
 
 
-def _max_request_body_bytes() -> int:
+def _max_request_body_bytes() -> Optional[int]:
+    """Return configured request body limit in bytes.
+
+    Positive integers enable a limit. None, 0, or a negative value disable the
+    local server-side cap, leaving upstream/model limits to decide whether a
+    prompt is acceptable.
+    """
+    raw_value = CONFIG.get("max_request_body_bytes", 10 * 1024 * 1024)
+    if raw_value is None:
+        return None
     try:
-        value = int(CONFIG.get("max_request_body_bytes", 10 * 1024 * 1024))
+        value = int(raw_value)
     except (TypeError, ValueError):
         return 10 * 1024 * 1024
-    return value if value > 0 else 10 * 1024 * 1024
+    return value if value > 0 else None
+
+
+def _max_upstream_prompt_bytes() -> Optional[int]:
+    """Return optional guardrail for the Gemini Web form payload size."""
+    raw_value = CONFIG.get("max_upstream_prompt_bytes")
+    if raw_value is None:
+        return None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _upstream_prompt_size_error(
+    prompt: str,
+    model_id: int,
+    think_mode: int,
+    extra_fields: dict = None,
+) -> Optional[dict]:
+    max_prompt = _max_upstream_prompt_bytes()
+    if max_prompt is None:
+        return None
+
+    from .gemini import _build_payload
+
+    upstream_bytes = len(_build_payload(prompt, model_id, think_mode, None, extra_fields).encode())
+    if upstream_bytes <= max_prompt:
+        return None
+    return {
+        "message": "prompt too large for Gemini Web upstream",
+        "upstream_prompt_bytes": upstream_bytes,
+        "limit": max_prompt,
+    }
 
 
 def _configured_api_keys() -> set:
@@ -161,7 +205,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": {"message": "invalid Content-Length"}}, 400)
                 return
             max_body = _max_request_body_bytes()
-            if length > max_body:
+            if max_body is not None and length > max_body:
                 log(f"request {req_id}: payload too large bytes={length} limit={max_body}")
                 self.send_json({"error": {"message": "request body too large"}}, 413)
                 return
@@ -212,6 +256,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
             f"request {req_id}: chat model={model_name} stream={stream} "
             f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
         )
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        if size_error:
+            log(
+                f"request {req_id}: upstream prompt too large "
+                f"bytes={size_error['upstream_prompt_bytes']} limit={size_error['limit']}"
+            )
+            self.send_json({"error": size_error}, 413)
+            return
 
         if stream and (not tools or tool_choice == "none"):
             try:
@@ -356,6 +408,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
             f"request {req_id}: responses model={model_name} stream={bool(req.get('stream'))} "
             f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
         )
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        if size_error:
+            log(
+                f"request {req_id}: upstream prompt too large "
+                f"bytes={size_error['upstream_prompt_bytes']} limit={size_error['limit']}"
+            )
+            self.send_json({"error": size_error}, 413)
+            return
 
         try:
             text = generate(prompt, model_id, think_mode, _upload_images(images), extra_fields)
@@ -437,6 +497,14 @@ class GeminiHandler(BaseHTTPRequestHandler):
             f"request {req_id}: google model={model_name} stream={stream} tools={has_tools} "
             f"tool_names={len(allowed_tool_names)} prompt_len={len(prompt)} images={len(images)}"
         )
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        if size_error:
+            log(
+                f"request {req_id}: upstream prompt too large "
+                f"bytes={size_error['upstream_prompt_bytes']} limit={size_error['limit']}"
+            )
+            self.send_json({"error": size_error}, 413)
+            return
 
         if stream and not has_tools:
             try:

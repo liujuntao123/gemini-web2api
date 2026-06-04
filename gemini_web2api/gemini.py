@@ -211,8 +211,8 @@ def _raise_for_upstream_error(raw: str):
     if not codes:
         return
     hint = ""
-    if 1099 in codes:
-        hint = " (Gemini rejected the request; prompt is likely too large)"
+    if any(code in codes for code in (1099, 1152)):
+        hint = " (Gemini rejected the request; prompt is likely too large or otherwise not accepted by the Web upstream)"
     raise GeminiUpstreamError(f"Gemini BardErrorInfo codes={codes}{hint}")
 
 

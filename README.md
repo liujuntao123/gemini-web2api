@@ -146,6 +146,8 @@ Create `config.json` in the same directory:
 
 When `api_keys` is `[]`, authentication is disabled. When one or more keys are set, `/v1/*` endpoints require `Authorization: Bearer <key>` or `x-api-key: <key>`.
 
+`max_request_body_bytes` is a local safety cap for incoming JSON request bodies. Increase it for clients that send long chat histories or large tool schemas, or set it to `0`/`null` to disable the local cap. Very large prompts can still be rejected by Gemini Web upstream/model limits.
+
 ## Docker
 
 ```bash
