@@ -7,4 +7,5 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./cookie.txt:/app/cookie.txt:ro
+      - ./data:/app/data
     restart: unless-stopped

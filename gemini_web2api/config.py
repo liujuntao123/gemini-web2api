@@ -13,6 +13,8 @@ DEFAULT_CONFIG = {
     "gemini_bl": "boq_assistant-bard-web-server_20260525.09_p0",
     "default_model": "gemini-3.5-flash",
     "log_requests": True,
+    "analytics_enabled": True,
+    "analytics_db_path": "data/gemini_web2api_usage.sqlite3",
     "cookie_file": None,
     "proxy": None,
     "api_keys": [],

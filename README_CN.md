@@ -20,6 +20,7 @@
 - **流式输出**: SSE Streaming 支持
 - **Codex CLI**: Responses API (`/v1/responses`) 兼容 OpenAI Codex
 - **Gemini CLI**: Google 原生 API (`/v1beta/models`) 兼容 Gemini CLI
+- **调用统计**: 持久化调用日志, 支持按天/模型/接口统计
 
 ## 快速开始
 
@@ -140,13 +141,36 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
-  "log_requests": true
+  "log_requests": true,
+  "analytics_enabled": true,
+  "analytics_db_path": "data/gemini_web2api_usage.sqlite3"
 }
 ```
 
 `api_keys` 为空数组 `[]` 时不校验密钥；填入一个或多个密钥后, `/v1/*` 接口需要 `Authorization: Bearer <key>` 或 `x-api-key: <key>`.
 
 `max_request_body_bytes` 是本服务对传入 JSON 请求体设置的本地安全上限。客户端发送较长历史消息或较大的 tools schema 时可以调大；设置为 `0`/`null` 可关闭本地限制。但特别大的 prompt 仍可能被 Gemini Web 上游或模型上下文限制拒绝。
+
+## 调用日志与统计
+
+`analytics_enabled` 为 `true` 时, 服务会把调用元数据写入 `analytics_db_path` 指定的 SQLite 数据库。记录字段包括模型、接口、API 类型、是否流式、状态码、调用时间、响应耗时、prompt/response 大小、估算 token、图片/工具数量和错误摘要。默认不保存 prompt 和 response 正文。
+
+内置看板页面:
+
+```text
+http://localhost:8081/dashboard
+```
+
+如果配置了 `api_keys`, 在看板右上角输入任意一个可用密钥。密钥只保存在浏览器 local storage 中, 请求本地 `/v1/usage/*` 数据接口时会作为 Bearer token 发送。
+
+只读查询接口:
+
+- `GET /v1/usage/logs?limit=100&offset=0` — 查询最近调用日志
+- `GET /v1/usage/stats?days=1` — 查询总览、按天、按模型、按接口聚合统计
+
+两个接口都支持可选过滤参数: `from`, `to`, `model`, `endpoint`, `api_type`, `success`。`from`/`to` 支持 Unix 时间戳、ISO 时间或 `YYYY-MM-DD`。
+
+Docker 部署时, `docker-compose.yml` 会把宿主机 `./data` 挂载到容器 `/app/data`, 因此默认 SQLite 数据库文件在容器重建后仍会保留。
 
 ## Docker 部署
 

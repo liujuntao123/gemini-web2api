@@ -24,6 +24,8 @@ def test_default_request_body_limit_is_documented_in_example():
 
     assert data["max_request_body_bytes"] == CONFIG["max_request_body_bytes"]
     assert data["max_upstream_prompt_bytes"] == CONFIG["max_upstream_prompt_bytes"]
+    assert data["analytics_enabled"] == CONFIG["analytics_enabled"]
+    assert data["analytics_db_path"] == CONFIG["analytics_db_path"]
 
 
 def test_invalid_configured_request_body_limit_uses_default(monkeypatch):

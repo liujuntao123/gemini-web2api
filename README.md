@@ -20,6 +20,7 @@ Convert Google Gemini's web interface into an OpenAI-compatible API. Zero authen
 - **Streaming**: SSE streaming support
 - **Codex CLI**: Responses API (`/v1/responses`) for OpenAI Codex integration
 - **Gemini CLI**: Google native API (`/v1beta/models`) for Gemini CLI compatibility
+- **Usage Analytics**: Persistent call logs and daily/model/endpoint statistics
 
 ## Quick Start
 
@@ -140,13 +141,36 @@ Create `config.json` in the same directory:
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
-  "log_requests": true
+  "log_requests": true,
+  "analytics_enabled": true,
+  "analytics_db_path": "data/gemini_web2api_usage.sqlite3"
 }
 ```
 
 When `api_keys` is `[]`, authentication is disabled. When one or more keys are set, `/v1/*` endpoints require `Authorization: Bearer <key>` or `x-api-key: <key>`.
 
 `max_request_body_bytes` is a local safety cap for incoming JSON request bodies. Increase it for clients that send long chat histories or large tool schemas, or set it to `0`/`null` to disable the local cap. Very large prompts can still be rejected by Gemini Web upstream/model limits.
+
+## Usage Logs and Statistics
+
+When `analytics_enabled` is true, the server writes request metadata to the SQLite database configured by `analytics_db_path`. It records model, endpoint, API type, stream flag, status code, call time, response latency, prompt/response size, estimated tokens, image/tool counts, and error summary. Prompt and response bodies are not stored.
+
+Open the built-in dashboard at:
+
+```text
+http://localhost:8081/dashboard
+```
+
+If `api_keys` is configured, enter one key in the dashboard header. The key is stored only in your browser local storage and is sent as a Bearer token to the local `/v1/usage/*` APIs.
+
+Available read-only endpoints:
+
+- `GET /v1/usage/logs?limit=100&offset=0` — recent call logs
+- `GET /v1/usage/stats?days=1` — summary plus daily, model, and endpoint aggregates
+
+Both endpoints support optional filters: `from`, `to`, `model`, `endpoint`, `api_type`, and `success`. `from`/`to` accept Unix timestamps, ISO timestamps, or `YYYY-MM-DD`.
+
+For Docker deployments, `docker-compose.yml` mounts `./data` to `/app/data`, so the default SQLite file persists across container rebuilds.
 
 ## Docker
 
