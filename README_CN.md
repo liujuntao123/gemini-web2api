@@ -1,26 +1,21 @@
 # gemini-web2api
 
 <p align="center">
-  <img src="logo.png" width="200" alt="gemini-web2api logo">
+  <img src="logo.png" width="180" alt="gemini-web2api logo">
 </p>
 
 [English](README.md)
 
-将 Google Gemini 网页端转换为 OpenAI 兼容 API. 零认证, 零成本, 跨平台.
+把 Google Gemini 网页端转换成本地 OpenAI 兼容 API。支持 Chat Completions、Responses API、Gemini 原生接口、流式输出、工具调用，以及内置调用统计看板。
 
-## 特性
+## 核心功能
 
-- **可选密钥**: `api_keys` 为空时免密, 填入密钥后按 OpenAI Bearer Key 校验
-- **OpenAI 兼容**: 直接替换 `/v1/chat/completions` 和 `/v1/models`
-- **工具调用**: 完整的 Function Calling 支持 (OpenAI 格式)
-- **多模型**: Flash, Flash Thinking (2万字+输出), Pro, Auto, Lite
-- **思考深度**: 通过 `@think=N` 后缀调节 (0=最深, 4=最浅)
-- **联网搜索**: 内置互联网访问 (Gemini 原生搜索能力)
-- **跨平台**: 纯 Python 服务端, 依赖很少
-- **流式输出**: SSE Streaming 支持
-- **Codex CLI**: Responses API (`/v1/responses`) 兼容 OpenAI Codex
-- **Gemini CLI**: Google 原生 API (`/v1beta/models`) 兼容 Gemini CLI
-- **调用统计**: 持久化调用日志, 支持按天/模型/接口统计
+- OpenAI 兼容接口：`/v1/chat/completions`、`/v1/models`、`/v1/responses`
+- Gemini 原生接口：`/v1beta/models/*:generateContent`
+- SSE 流式输出
+- 可选 API Key 鉴权
+- 多种 Gemini Web 模型模式
+- SQLite 持久化调用日志和 `/dashboard` 数据看板
 
 ## 快速开始
 
@@ -29,21 +24,29 @@ pip install -r requirements.txt
 python -m gemini_web2api
 ```
 
-服务启动在 `http://localhost:8081/v1`.
+默认 Base URL：
 
-也可以在源码目录中继续使用兼容入口 `python gemini_web2api.py`。
+```text
+http://localhost:8081/v1
+```
+
+源码目录中的兼容入口也可用：
+
+```bash
+python gemini_web2api.py
+```
 
 ## 客户端配置
 
-### Cherry Studio / ChatBox / 任何 OpenAI 兼容客户端
+Cherry Studio、ChatBox、OpenAI SDK 或其他 OpenAI 兼容客户端：
 
 | 字段 | 值 |
-|------|-----|
+| --- | --- |
 | Base URL | `http://localhost:8081/v1` |
-| API Key | `config.json` 中的任意 `api_keys`；未配置时随便填 |
+| API Key | 配置的任意 key；关闭鉴权时可随便填 |
 | Model | `gemini-3.5-flash-thinking` |
 
-### curl
+示例请求：
 
 ```bash
 curl http://localhost:8081/v1/chat/completions \
@@ -52,92 +55,33 @@ curl http://localhost:8081/v1/chat/completions \
   -d '{"model":"gemini-3.5-flash","messages":[{"role":"user","content":"你好!"}]}'
 ```
 
-### OpenAI Python SDK
+## 模型
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8081/v1", api_key="sk-your-key")
-resp = client.chat.completions.create(
-    model="gemini-3.5-flash-thinking",
-    messages=[{"role": "user", "content": "解释量子计算"}]
-)
-print(resp.choices[0].message.content)
+| 模型 | 说明 |
+| --- | --- |
+| `gemini-3.5-flash` | 快速默认模型 |
+| `gemini-3.5-flash-thinking` | 更长输出，深度思考模式 |
+| `gemini-3.5-flash-thinking-lite` | 较轻的思考模式 |
+| `gemini-3.1-pro` | Pro 标签，真实路由可能需要 cookie |
+| `gemini-auto` | Gemini Web 自动模式 |
+| `gemini-flash-lite` | 轻量快速模式 |
+
+可用 `@think=N` 调整思考深度：
+
+```text
+gemini-3.5-flash-thinking@think=0
+gemini-3.5-flash-thinking@think=2
+gemini-3.5-flash-thinking@think=4
 ```
 
-### Gemini CLI
+## 配置
 
-```bash
-export GEMINI_API_KEY=none
-export GOOGLE_GEMINI_BASE_URL=http://localhost:8081
-gemini
-```
-
-支持 Google 原生 API 端点:
-- `GET /v1beta/models` — 模型列表
-- `POST /v1beta/models/{model}:generateContent` — 非流式生成
-- `POST /v1beta/models/{model}:streamGenerateContent` — 流式生成 (SSE)
-
-## 可用模型
-
-| 模型 | 说明 | 输出量 |
-|------|------|--------|
-| `gemini-3.5-flash` | 快速通用 | ~1.2万字 |
-| `gemini-3.5-flash-thinking` | 深度思考, 最长输出 | **~2万字** |
-| `gemini-3.5-flash-thinking-lite` | 自适应思考深度 | ~1.5万字 |
-| `gemini-3.1-pro` | Pro (需 cookie 才能真正路由) | ~1.2万字 |
-| `gemini-auto` | 自动选择模型 | 不定 |
-| `gemini-flash-lite` | 轻量快速 | ~1万字 |
-
-### 思考深度
-
-在模型名后追加 `@think=N`:
-
-```
-gemini-3.5-flash-thinking@think=0   # 最深 (默认)
-gemini-3.5-flash-thinking@think=2   # 中等
-gemini-3.5-flash-thinking@think=4   # 最浅
-```
-
-## 可选: Cookie 配置 (Pro 模型)
-
-匿名访问对所有模型有效, 但 `gemini-3.1-pro` 在无认证时会路由到 Flash. 要获得真正的 Pro 路由, 提供 cookie 文件:
-
-```bash
-python gemini_web2api.py --cookie-file cookie.txt
-```
-
-### 如何获取 Cookie
-
-1. 打开 Chrome, 访问 [gemini.google.com](https://gemini.google.com) 并登录任意免费 Google 账号
-2. 打开开发者工具 (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制以下 cookie 值: `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`
-4. 创建 `cookie.txt`, 格式如下:
-
-```
-SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值; SAPISID=你的SAPISID值; __Secure-1PSID=你的1PSID值
-```
-
-或使用 JSON 格式:
-```json
-{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "你的SAPISID值"}
-```
-
-**替代方案 (浏览器扩展)**: 使用任意 "Export Cookies" 扩展导出 `gemini.google.com` 的 cookie, 然后转换为上述单行格式.
-
-不需要付费订阅 — 免费 Google 账号即可.
-
-## 配置文件
-
-在同目录创建 `config.json`:
+从 `config.example.json` 复制出 `config.json` 后按需修改：
 
 ```json
 {
   "port": 8081,
   "host": "0.0.0.0",
-  "retry_attempts": 3,
-  "retry_delay_sec": 2,
-  "request_timeout_sec": 180,
-  "max_request_body_bytes": 10485760,
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
@@ -147,111 +91,72 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
 }
 ```
 
-`api_keys` 为空数组 `[]` 时不校验密钥；填入一个或多个密钥后, `/v1/*` 接口需要 `Authorization: Bearer <key>` 或 `x-api-key: <key>`.
+说明：
 
-`max_request_body_bytes` 是本服务对传入 JSON 请求体设置的本地安全上限。客户端发送较长历史消息或较大的 tools schema 时可以调大；设置为 `0`/`null` 可关闭本地限制。但特别大的 prompt 仍可能被 Gemini Web 上游或模型上下文限制拒绝。
+- `api_keys` 设为 `[]` 时关闭鉴权。
+- 配置 key 后，`/v1/*` 接口需要 `Authorization: Bearer <key>`。
+- 无法访问 `gemini.google.com` 时设置 `proxy`。
+- 如需提高真实 Pro 路由概率，可设置 `cookie_file` 指向 cookie 文件。
 
-## 调用日志与统计
+## 调用看板
 
-`analytics_enabled` 为 `true` 时, 服务会把调用元数据写入 `analytics_db_path` 指定的 SQLite 数据库。记录字段包括模型、接口、API 类型、是否流式、状态码、调用时间、响应耗时、prompt/response 大小、估算 token、图片/工具数量和错误摘要。默认不保存 prompt 和 response 正文。
-
-内置看板页面:
+打开：
 
 ```text
 http://localhost:8081/dashboard
 ```
 
-如果配置了 `api_keys`, 在看板右上角输入任意一个可用密钥。密钥只保存在浏览器 local storage 中, 请求本地 `/v1/usage/*` 数据接口时会作为 Bearer token 发送。
+看板包含调用量、成功率、响应耗时、token 估算、模型分布、接口分布和最近日志。启用 API Key 时，在看板右上角输入一个可用 key。
 
-只读查询接口:
+原始数据接口：
 
-- `GET /v1/usage/logs?limit=100&offset=0` — 查询最近调用日志
-- `GET /v1/usage/stats?days=1` — 查询总览、按天、按模型、按接口聚合统计
+- `GET /v1/usage/stats?days=1`
+- `GET /v1/usage/logs?limit=100&offset=0`
 
-两个接口都支持可选过滤参数: `from`, `to`, `model`, `endpoint`, `api_type`, `success`。`from`/`to` 支持 Unix 时间戳、ISO 时间或 `YYYY-MM-DD`。
+统计数据存储在 SQLite 中。默认不保存 prompt 和 response 正文。
 
-Docker 部署时, `docker-compose.yml` 会把宿主机 `./data` 挂载到容器 `/app/data`, 因此默认 SQLite 数据库文件在容器重建后仍会保留。
-
-## Docker 部署
+## Docker
 
 ```bash
 cp config.example.json config.json
-docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro gemini-web2api
+docker compose up -d --build
 ```
 
-或使用 Docker Compose:
+Docker 默认 Base URL：
 
-```powershell
-.\deploy.ps1
+```text
+http://localhost:18081/v1
 ```
 
-如需指定端口:
+看板地址：
 
-```powershell
-.\deploy.ps1 -Port 18081
+```text
+http://localhost:18081/dashboard
 ```
 
-或手动执行:
+`docker-compose.yml` 会把宿主机 `./data` 挂载到容器 `/app/data`，调用日志在容器重建后仍会保留。
+
+## Gemini CLI
 
 ```bash
-cp config.example.json config.json
-docker compose up -d
+export GEMINI_API_KEY=none
+export GOOGLE_GEMINI_BASE_URL=http://localhost:8081
+gemini
 ```
 
-部署后 Base URL 为 `http://localhost:18081/v1`。
+支持的原生接口：
 
-如需挂载 Cookie 文件:
-
-```bash
-docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro -v ./cookie.txt:/app/cookie.txt:ro gemini-web2api
-```
-
-此时 `config.json` 中设置 `"cookie_file": "/app/cookie.txt"`.
-
-## 代理配置
-
-如果无法直接访问 `gemini.google.com` (连接超时), 需要配置代理:
-
-**方式 1: 命令行参数**
-```bash
-python gemini_web2api.py --proxy http://127.0.0.1:7890
-```
-
-**方式 2: config.json**
-```json
-{"proxy": "http://127.0.0.1:7890"}
-```
-
-**方式 3: 环境变量** (自动检测)
-```bash
-set HTTPS_PROXY=http://127.0.0.1:7890
-python gemini_web2api.py
-```
-
-支持 Clash, V2Ray, Shadowsocks 等任何 HTTP 代理.
+- `GET /v1beta/models`
+- `POST /v1beta/models/{model}:generateContent`
+- `POST /v1beta/models/{model}:streamGenerateContent`
 
 ## 已知限制
 
-- **图片输入有限支持**: Google 原生 `inlineData` 图片会通过 Gemini Web 上传。OpenAI `image_url` 消息暂不上传, 会转换成文本提示。
-- **Pro/Ultra 非真实路由**: 无付费订阅 cookie 时, `gemini-3.1-pro` 实际路由到 Flash 模型. "Pro" 只是 UI 偏好标签.
-- **单轮对话**: 每次请求是独立对话, 多轮上下文通过在 prompt 中包含历史消息模拟.
-- **频率限制**: Google 可能限制高频请求, server 会自动重试但持续高负载可能被封.
-
-## 系统要求
-
-- Python 3.8+
-- `httpx>=0.25`, 用于真实流式传输
-- 需要能访问 `gemini.google.com` (部分地区需代理)
-
-## 工作原理
-
-逆向 Google Gemini 网页端的 StreamGenerate 协议, 将 OpenAI API 格式与 Gemini 内部 protobuf-like 格式互转. 模型选择通过请求 payload 的 `[79]` 字段控制, 映射自 Gemini 前端 JS 源码中的 `MODE_CATEGORY` 枚举.
-
-## 致谢
-
-- [linux.do](https://linux.do) 社区
-- 开源 API 代理生态
+- Gemini Web 行为可能变化，导致桥接失效。
+- 请求按单轮处理，多轮上下文需要放进 prompt。
+- 高频调用可能触发 Google 限流。
+- OpenAI `image_url` 输入支持有限；Google 原生 `inlineData` 图片会通过 Gemini Web 上传。
+- 没有合适 cookie 时，Pro/Ultra 标签不一定代表真实上游 Pro/Ultra 路由。
 
 ## License
 

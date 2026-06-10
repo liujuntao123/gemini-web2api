@@ -1,26 +1,21 @@
 # gemini-web2api
 
 <p align="center">
-  <img src="logo.png" width="200" alt="gemini-web2api logo">
+  <img src="logo.png" width="180" alt="gemini-web2api logo">
 </p>
 
 [中文文档](README_CN.md)
 
-Convert Google Gemini's web interface into an OpenAI-compatible API. Zero authentication, zero cost, cross-platform.
+Convert Google Gemini Web into an OpenAI-compatible local API. It supports Chat Completions, Responses API, Gemini native endpoints, streaming, tool calls, and a built-in usage dashboard.
 
-## Features
+## Highlights
 
-- **Optional API Keys**: no auth when `api_keys` is empty, OpenAI-style Bearer auth when configured
-- **OpenAI Compatible**: Drop-in replacement for `/v1/chat/completions` and `/v1/models`
-- **Tool Calling**: Full function calling support (OpenAI format)
-- **Multiple Models**: Flash, Flash Thinking (20k+ char output), Pro, Auto, Lite
-- **Thinking Depth**: Adjustable via `@think=N` suffix (0=deepest, 4=shallowest)
-- **Web Search**: Built-in internet access (Gemini's native search)
-- **Cross-Platform**: Pure Python server with a small dependency set
-- **Streaming**: SSE streaming support
-- **Codex CLI**: Responses API (`/v1/responses`) for OpenAI Codex integration
-- **Gemini CLI**: Google native API (`/v1beta/models`) for Gemini CLI compatibility
-- **Usage Analytics**: Persistent call logs and daily/model/endpoint statistics
+- OpenAI-compatible `/v1/chat/completions`, `/v1/models`, and `/v1/responses`
+- Gemini native `/v1beta/models/*:generateContent` support
+- Streaming SSE responses
+- Optional API key protection
+- Multiple Gemini Web model modes
+- Persistent SQLite call logs and `/dashboard` usage analytics
 
 ## Quick Start
 
@@ -29,21 +24,29 @@ pip install -r requirements.txt
 python -m gemini_web2api
 ```
 
-Server starts at `http://localhost:8081/v1`.
+Default base URL:
 
-Running `python gemini_web2api.py` is also supported as a source-tree compatibility entry point.
+```text
+http://localhost:8081/v1
+```
 
-## Client Configuration
+The legacy source-tree entry point also works:
 
-### Cherry Studio / ChatBox / any OpenAI client
+```bash
+python gemini_web2api.py
+```
+
+## Client Setup
+
+For Cherry Studio, ChatBox, OpenAI SDK, or any OpenAI-compatible client:
 
 | Field | Value |
-|-------|-------|
+| --- | --- |
 | Base URL | `http://localhost:8081/v1` |
-| API Key | any `api_keys` value from `config.json`; anything if not configured |
+| API Key | any configured key, or any value when auth is disabled |
 | Model | `gemini-3.5-flash-thinking` |
 
-### curl
+Example request:
 
 ```bash
 curl http://localhost:8081/v1/chat/completions \
@@ -52,92 +55,33 @@ curl http://localhost:8081/v1/chat/completions \
   -d '{"model":"gemini-3.5-flash","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-### OpenAI Python SDK
+## Models
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8081/v1", api_key="sk-your-key")
-resp = client.chat.completions.create(
-    model="gemini-3.5-flash-thinking",
-    messages=[{"role": "user", "content": "Explain quantum computing"}]
-)
-print(resp.choices[0].message.content)
+| Model | Notes |
+| --- | --- |
+| `gemini-3.5-flash` | fast default model |
+| `gemini-3.5-flash-thinking` | longer output, deeper reasoning mode |
+| `gemini-3.5-flash-thinking-lite` | lighter thinking mode |
+| `gemini-3.1-pro` | Pro label, real routing may require cookies |
+| `gemini-auto` | Gemini Web auto mode |
+| `gemini-flash-lite` | lightweight fast mode |
+
+Thinking depth can be adjusted with `@think=N`:
+
+```text
+gemini-3.5-flash-thinking@think=0
+gemini-3.5-flash-thinking@think=2
+gemini-3.5-flash-thinking@think=4
 ```
-
-### Gemini CLI
-
-```bash
-export GEMINI_API_KEY=none
-export GOOGLE_GEMINI_BASE_URL=http://localhost:8081
-gemini
-```
-
-Supports Google native API endpoints:
-- `GET /v1beta/models` — list models
-- `POST /v1beta/models/{model}:generateContent` — non-streaming
-- `POST /v1beta/models/{model}:streamGenerateContent` — streaming (SSE)
-
-## Available Models
-
-| Model | Description | Output |
-|-------|-------------|--------|
-| `gemini-3.5-flash` | Fast general-purpose | ~12k chars |
-| `gemini-3.5-flash-thinking` | Deep thinking, longest output | **~20k chars** |
-| `gemini-3.5-flash-thinking-lite` | Adaptive thinking depth | ~15k chars |
-| `gemini-3.1-pro` | Pro (needs cookie for real routing) | ~12k chars |
-| `gemini-auto` | Auto model selection | varies |
-| `gemini-flash-lite` | Lightweight fast | ~10k chars |
-
-### Thinking Depth
-
-Append `@think=N` to any model name:
-
-```
-gemini-3.5-flash-thinking@think=0   # deepest (default)
-gemini-3.5-flash-thinking@think=2   # medium
-gemini-3.5-flash-thinking@think=4   # shallowest
-```
-
-## Optional: Cookie for Pro
-
-Anonymous access works for all models, but `gemini-3.1-pro` routes to Flash without authentication. To get real Pro routing, provide a cookie file:
-
-```bash
-python gemini_web2api.py --cookie-file cookie.txt
-```
-
-### How to get cookies
-
-1. Open Chrome, go to [gemini.google.com](https://gemini.google.com) and sign in with any free Google account
-2. Open DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. Copy these cookie values: `SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`
-4. Create `cookie.txt` in this format:
-
-```
-SID=your_sid_value; HSID=your_hsid_value; SSID=your_ssid_value; APISID=your_apisid_value; SAPISID=your_sapisid_value; __Secure-1PSID=your_1psid_value
-```
-
-Or use the JSON format:
-```json
-{"cookie": "SID=xxx; HSID=xxx; SSID=xxx; APISID=xxx; SAPISID=xxx; __Secure-1PSID=xxx", "sapisid": "your_sapisid_value"}
-```
-
-**Alternative (browser extension)**: Use any "Export Cookies" extension to export cookies for `gemini.google.com` in Netscape format, then convert to the single-line format above.
-
-No paid subscription needed — a free Google account is sufficient.
 
 ## Configuration
 
-Create `config.json` in the same directory:
+Create `config.json` from `config.example.json` and edit as needed:
 
 ```json
 {
   "port": 8081,
   "host": "0.0.0.0",
-  "retry_attempts": 3,
-  "retry_delay_sec": 2,
-  "request_timeout_sec": 180,
-  "max_request_body_bytes": 10485760,
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
@@ -147,131 +91,72 @@ Create `config.json` in the same directory:
 }
 ```
 
-When `api_keys` is `[]`, authentication is disabled. When one or more keys are set, `/v1/*` endpoints require `Authorization: Bearer <key>` or `x-api-key: <key>`.
+Notes:
 
-`max_request_body_bytes` is a local safety cap for incoming JSON request bodies. Increase it for clients that send long chat histories or large tool schemas, or set it to `0`/`null` to disable the local cap. Very large prompts can still be rejected by Gemini Web upstream/model limits.
+- Set `api_keys` to `[]` to disable authentication.
+- `/v1/*` endpoints require `Authorization: Bearer <key>` when keys are configured.
+- Set `proxy` if your machine cannot access `gemini.google.com`.
+- Optional cookie support can improve real Pro routing: set `cookie_file` to a cookie file path.
 
-## Usage Logs and Statistics
+## Usage Dashboard
 
-When `analytics_enabled` is true, the server writes request metadata to the SQLite database configured by `analytics_db_path`. It records model, endpoint, API type, stream flag, status code, call time, response latency, prompt/response size, estimated tokens, image/tool counts, and error summary. Prompt and response bodies are not stored.
-
-Open the built-in dashboard at:
+Open:
 
 ```text
 http://localhost:8081/dashboard
 ```
 
-If `api_keys` is configured, enter one key in the dashboard header. The key is stored only in your browser local storage and is sent as a Bearer token to the local `/v1/usage/*` APIs.
+The dashboard shows call volume, success rate, latency, token estimates, model distribution, endpoint distribution, and recent logs. If API keys are enabled, enter one key in the dashboard header.
 
-Available read-only endpoints:
+Raw APIs:
 
-- `GET /v1/usage/logs?limit=100&offset=0` — recent call logs
-- `GET /v1/usage/stats?days=1` — summary plus daily, model, and endpoint aggregates
+- `GET /v1/usage/stats?days=1`
+- `GET /v1/usage/logs?limit=100&offset=0`
 
-Both endpoints support optional filters: `from`, `to`, `model`, `endpoint`, `api_type`, and `success`. `from`/`to` accept Unix timestamps, ISO timestamps, or `YYYY-MM-DD`.
-
-For Docker deployments, `docker-compose.yml` mounts `./data` to `/app/data`, so the default SQLite file persists across container rebuilds.
+The analytics database is SQLite. Prompt and response bodies are not stored.
 
 ## Docker
 
 ```bash
 cp config.example.json config.json
-docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro gemini-web2api
+docker compose up -d --build
 ```
 
-Or use Docker Compose:
+Default Docker base URL:
 
-```powershell
-.\deploy.ps1
+```text
+http://localhost:18081/v1
 ```
 
-To override the host port:
+Dashboard:
 
-```powershell
-.\deploy.ps1 -Port 18081
+```text
+http://localhost:18081/dashboard
 ```
 
-Or run it manually:
+`docker-compose.yml` mounts `./data` to `/app/data`, so usage logs persist across container rebuilds.
+
+## Gemini CLI
 
 ```bash
-cp config.example.json config.json
-docker compose up -d
+export GEMINI_API_KEY=none
+export GOOGLE_GEMINI_BASE_URL=http://localhost:8081
+gemini
 ```
 
-After deployment, the Base URL is `http://localhost:18081/v1`.
+Supported native endpoints:
 
-To mount a cookie file:
-
-```bash
-docker run -d --name gemini-web2api -p 18081:8081 -v ./config.json:/app/config.json:ro -v ./cookie.txt:/app/cookie.txt:ro gemini-web2api
-```
-
-Set `"cookie_file": "/app/cookie.txt"` in `config.json`.
-
-## Proxy
-
-If you cannot access `gemini.google.com` directly (connection timeout), configure a proxy:
-
-**Method 1: CLI argument**
-```bash
-python gemini_web2api.py --proxy http://127.0.0.1:7890
-```
-
-**Method 2: config.json**
-```json
-{"proxy": "http://127.0.0.1:7890"}
-```
-
-**Method 3: Environment variable** (auto-detected)
-```bash
-export HTTPS_PROXY=http://127.0.0.1:7890
-python gemini_web2api.py
-```
-
-Works with Clash, V2Ray, Shadowsocks, or any HTTP proxy.
-
-## Tool Calling
-
-```python
-resp = client.chat.completions.create(
-    model="gemini-3.5-flash",
-    messages=[{"role": "user", "content": "What's the weather in Tokyo?"}],
-    tools=[{
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get weather for a city",
-            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
-        }
-    }]
-)
-```
+- `GET /v1beta/models`
+- `POST /v1beta/models/{model}:generateContent`
+- `POST /v1beta/models/{model}:streamGenerateContent`
 
 ## Limitations
 
-- **Limited image input**: Google native `inlineData` image parts are uploaded through Gemini Web. OpenAI `image_url` message parts are not uploaded and are converted to a text note.
-- **Not real Pro/Ultra**: Without a paid subscription cookie, `gemini-3.1-pro` routes to the same Flash model. The "Pro" label is a UI preference, not a backend model switch.
-- **Single-turn only**: Each request is an independent conversation. Multi-turn context is simulated by including previous messages in the prompt.
-- **Rate limits**: Google may throttle high-frequency requests. The server retries automatically but sustained heavy use may be blocked.
-
-## Requirements
-
-- Python 3.8+
-- `httpx>=0.25` for true streaming transport
-- Network access to `gemini.google.com` (proxy/VPN may be needed in some regions)
-
-## How It Works
-
-This tool reverse-engineers Google Gemini's web StreamGenerate protocol. It sends requests to the same endpoint that the Gemini web app uses, converting between OpenAI's API format and Gemini's internal protobuf-like format.
-
-The model selection is controlled by field `[79]` in the request payload, mapped from Gemini's frontend JavaScript source (`MODE_CATEGORY` enum).
-
-## Acknowledgments
-
-- [GenericAgent](https://github.com/lsdefine/GenericAgent) — 本项目核心开发依仗 GA 提供的 AI 能力
-- [linux.do](https://linux.do) community
-- Inspired by the open-source API proxy ecosystem
+- Gemini Web behavior can change and may break this bridge.
+- Requests are single-turn; multi-turn context is passed in the prompt.
+- Google may rate-limit high-frequency use.
+- OpenAI `image_url` input is limited; Google native `inlineData` images are uploaded through Gemini Web.
+- Without suitable cookies, Pro/Ultra labels may not mean real upstream Pro/Ultra routing.
 
 ## License
 
