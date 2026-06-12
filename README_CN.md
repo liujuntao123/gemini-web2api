@@ -117,9 +117,11 @@ http://localhost:8081/dashboard
 
 ## Docker
 
+使用 GitHub Container Registry 上的预构建镜像：
+
 ```bash
 cp config.example.json config.json
-docker compose up -d --build
+docker compose up -d
 ```
 
 Docker 默认 Base URL：
@@ -135,6 +137,20 @@ http://localhost:18081/dashboard
 ```
 
 `docker-compose.yml` 会把宿主机 `./data` 挂载到容器 `/app/data`，调用日志在容器重建后仍会保留。
+
+指定镜像标签：
+
+```bash
+GEMINI_WEB2API_IMAGE=ghcr.io/liujuntao123/gemini-web2api:v1.1.0 docker compose up -d
+```
+
+本地开发构建：
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build
+```
+
+GitHub Actions 会在推送默认分支和 `v1.1.0` 这类版本标签时，将 Docker 镜像发布到 `ghcr.io/liujuntao123/gemini-web2api`。
 
 ## Gemini CLI
 

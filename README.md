@@ -117,9 +117,11 @@ The analytics database is SQLite. Prompt and response bodies are not stored.
 
 ## Docker
 
+Use the prebuilt GitHub Container Registry image:
+
 ```bash
 cp config.example.json config.json
-docker compose up -d --build
+docker compose up -d
 ```
 
 Default Docker base URL:
@@ -135,6 +137,20 @@ http://localhost:18081/dashboard
 ```
 
 `docker-compose.yml` mounts `./data` to `/app/data`, so usage logs persist across container rebuilds.
+
+To use a specific image tag:
+
+```bash
+GEMINI_WEB2API_IMAGE=ghcr.io/liujuntao123/gemini-web2api:v1.1.0 docker compose up -d
+```
+
+For local development builds:
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build
+```
+
+GitHub Actions publishes Docker images to `ghcr.io/liujuntao123/gemini-web2api` on pushes to the default branch and version tags such as `v1.1.0`.
 
 ## Gemini CLI
 

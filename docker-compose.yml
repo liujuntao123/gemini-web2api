@@ -1,6 +1,7 @@
 services:
   gemini-web2api:
-    build: .
+    image: ${GEMINI_WEB2API_IMAGE:-ghcr.io/liujuntao123/gemini-web2api:latest}
+    pull_policy: always
     container_name: gemini-web2api
     ports:
       - "${HOST_PORT:-18081}:8081"
