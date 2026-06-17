@@ -82,6 +82,10 @@ gemini-3.5-flash-thinking@think=4
 {
   "port": 8081,
   "host": "0.0.0.0",
+  "max_request_body_bytes": 52428800,
+  "current_input_file_enabled": true,
+  "current_input_file_min_bytes": 95000,
+  "current_input_file_name": "message.txt",
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
@@ -96,7 +100,10 @@ gemini-3.5-flash-thinking@think=4
 - `api_keys` 设为 `[]` 时关闭鉴权。
 - 配置 key 后，`/v1/*` 接口需要 `Authorization: Bearer <key>`。
 - 无法访问 `gemini.google.com` 时设置 `proxy`。
-- 如需提高真实 Pro 路由概率，可设置 `cookie_file` 指向 cookie 文件。
+- 如需提高真实 Pro 路由概率，可设置 `cookie_file` 指向 cookie 文件。文件内容可以是裸 Cookie header value、`Cookie: ...` 单行、整段请求 headers，或包含 `cookie`/`headers` 的 JSON。
+- 上游 cookie 模式会按请求自动选择：小尺寸纯文本请求不带 Cookie/Authorization；文件、图片上传和大上下文文件引用请求会带 Cookie/Authorization。
+- 文件上传、图片上传和大 prompt 转附件模式都需要配置 `cookie_file`。
+- `current_input_file_enabled` 默认开启。当结构化聊天/历史请求超过 `current_input_file_min_bytes` 且 `cookie_file` 可用时，历史上下文会作为 `current_input_file_name` 上传并绑定到 Gemini Web 文件引用，最新用户输入保留在正文中。
 
 ## 调用看板
 
@@ -171,7 +178,7 @@ gemini
 - Gemini Web 行为可能变化，导致桥接失效。
 - 请求按单轮处理，多轮上下文需要放进 prompt。
 - 高频调用可能触发 Google 限流。
-- OpenAI `image_url` 输入支持有限；Google 原生 `inlineData` 图片会通过 Gemini Web 上传。
+- OpenAI `image_url`、Responses `input_file`、Google 原生 `inlineData` 和 Google 原生 HTTP `fileData` 会在配置 cookie 后通过 Gemini Web 上传。
 - 没有合适 cookie 时，Pro/Ultra 标签不一定代表真实上游 Pro/Ultra 路由。
 
 ## License

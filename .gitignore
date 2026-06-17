@@ -2,10 +2,15 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+.venv/
+venv/
+dist/
+build/
 config.json
 cookie.txt
 cookie.json
 .env
 data/
+worker.txt
 .idea
 .DS_Store

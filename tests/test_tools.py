@@ -1,5 +1,6 @@
 from gemini_web2api.tools import (
     google_contents_to_prompt,
+    messages_to_prompt,
     parse_google_function_calls,
     parse_tool_calls,
 )
@@ -83,3 +84,48 @@ def test_non_dict_messages_are_ignored():
 
     assert prompt == "hello"
     assert images == []
+
+
+def test_openai_image_url_data_becomes_attachment():
+    prompt, attachments = messages_to_prompt([{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "describe it"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGk="}},
+        ],
+    }])
+
+    assert prompt == "describe it"
+    assert attachments == [{"data": b"hi", "mime_type": "image/png", "name": "image.png"}]
+
+
+def test_openai_input_file_data_becomes_attachment():
+    prompt, attachments = messages_to_prompt([{
+        "role": "user",
+        "content": [{
+            "type": "input_file",
+            "filename": "notes.txt",
+            "mime_type": "text/plain",
+            "file_data": "data:text/plain;base64,aGVsbG8=",
+        }],
+    }])
+
+    assert prompt == ""
+    assert attachments == [{"data": b"hello", "mime_type": "text/plain", "name": "notes.txt"}]
+
+
+def test_openai_input_file_nested_file_object_becomes_attachment():
+    prompt, attachments = messages_to_prompt([{
+        "role": "user",
+        "content": [{
+            "type": "input_file",
+            "file": {
+                "filename": "notes.txt",
+                "mime_type": "text/plain",
+                "file_data": "aGVsbG8=",
+            },
+        }],
+    }])
+
+    assert prompt == ""
+    assert attachments == [{"data": b"hello", "mime_type": "text/plain", "name": "notes.txt"}]

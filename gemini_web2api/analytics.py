@@ -9,6 +9,11 @@ from .config import CONFIG
 
 _INIT_LOCK = threading.Lock()
 _INITIALIZED_PATHS = set()
+_REQUIRED_COLUMNS = {
+    "upstream_mode": "TEXT",
+    "upstream_cookie": "INTEGER",
+    "file_ref_count": "INTEGER",
+}
 
 
 def analytics_enabled() -> bool:
@@ -42,7 +47,11 @@ def init_db() -> None:
         return
     path = analytics_db_path()
     if path in _INITIALIZED_PATHS:
-        return
+        with _connect() as conn:
+            if _table_exists(conn, "api_call_logs"):
+                _ensure_columns(conn, "api_call_logs", _REQUIRED_COLUMNS)
+                return
+        _INITIALIZED_PATHS.discard(path)
     with _INIT_LOCK:
         if path in _INITIALIZED_PATHS:
             return
@@ -71,6 +80,9 @@ def init_db() -> None:
                     total_tokens INTEGER,
                     image_count INTEGER,
                     tool_count INTEGER,
+                    upstream_mode TEXT,
+                    upstream_cookie INTEGER,
+                    file_ref_count INTEGER,
                     error_type TEXT,
                     error_message TEXT,
                     client_host TEXT,
@@ -78,11 +90,28 @@ def init_db() -> None:
                 )
                 """
             )
+            _ensure_columns(conn, "api_call_logs", _REQUIRED_COLUMNS)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_call_logs_created ON api_call_logs(created_at_ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_call_logs_model ON api_call_logs(model)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_call_logs_endpoint ON api_call_logs(endpoint)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_call_logs_success ON api_call_logs(success)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_call_logs_upstream_mode ON api_call_logs(upstream_mode)")
         _INITIALIZED_PATHS.add(path)
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}")
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return bool(row)
 
 
 def _truncate(value: Any, max_len: int = 500) -> Optional[str]:
@@ -108,6 +137,11 @@ def record_call(data: Dict[str, Any]) -> bool:
             success = bool(status_code is not None and 200 <= int(status_code) < 400)
         else:
             success = bool(data.get("success"))
+        upstream_cookie = data.get("upstream_cookie")
+        if upstream_cookie is None:
+            upstream_mode = data.get("upstream_mode")
+        else:
+            upstream_mode = "cookie" if upstream_cookie else "anonymous"
         row = {
             "request_id": str(data.get("request_id") or ""),
             "created_at": created_at,
@@ -128,6 +162,9 @@ def record_call(data: Dict[str, Any]) -> bool:
             "total_tokens": data.get("total_tokens"),
             "image_count": data.get("image_count"),
             "tool_count": data.get("tool_count"),
+            "upstream_mode": _truncate(upstream_mode, 40),
+            "upstream_cookie": None if upstream_cookie is None else (1 if upstream_cookie else 0),
+            "file_ref_count": data.get("file_ref_count"),
             "error_type": _truncate(data.get("error_type"), 120),
             "error_message": _truncate(data.get("error_message"), 500),
             "client_host": _truncate(data.get("client_host"), 120),
@@ -140,13 +177,15 @@ def record_call(data: Dict[str, Any]) -> bool:
                     request_id, created_at, created_at_ts, method, endpoint, api_type,
                     model, stream, status_code, success, response_ms, request_bytes,
                     prompt_chars, response_chars, prompt_tokens, completion_tokens,
-                    total_tokens, image_count, tool_count, error_type, error_message,
+                    total_tokens, image_count, tool_count, upstream_mode, upstream_cookie,
+                    file_ref_count, error_type, error_message,
                     client_host, user_agent
                 ) VALUES (
                     :request_id, :created_at, :created_at_ts, :method, :endpoint, :api_type,
                     :model, :stream, :status_code, :success, :response_ms, :request_bytes,
                     :prompt_chars, :response_chars, :prompt_tokens, :completion_tokens,
-                    :total_tokens, :image_count, :tool_count, :error_type, :error_message,
+                    :total_tokens, :image_count, :tool_count, :upstream_mode, :upstream_cookie,
+                    :file_ref_count, :error_type, :error_message,
                     :client_host, :user_agent
                 )
                 """,
@@ -213,7 +252,7 @@ def _query_filters(params: Dict[str, Any]) -> Tuple[str, List[Any]]:
     if to_ts is not None:
         clauses.append("created_at_ts <= ?")
         args.append(to_ts)
-    for key in ("model", "endpoint", "api_type"):
+    for key in ("model", "endpoint", "api_type", "upstream_mode"):
         if params.get(key):
             clauses.append(f"{key} = ?")
             args.append(str(params[key]))
@@ -239,7 +278,8 @@ def query_logs(params: Dict[str, Any]) -> Dict[str, Any]:
             SELECT id, request_id, created_at, method, endpoint, api_type, model, stream,
                    status_code, success, response_ms, request_bytes, prompt_chars,
                    response_chars, prompt_tokens, completion_tokens, total_tokens,
-                   image_count, tool_count, error_type, error_message, client_host, user_agent
+                   image_count, tool_count, upstream_mode, upstream_cookie, file_ref_count,
+                   error_type, error_message, client_host, user_agent
             FROM api_call_logs
             {where}
             ORDER BY created_at_ts DESC, id DESC
@@ -252,6 +292,8 @@ def query_logs(params: Dict[str, Any]) -> Dict[str, Any]:
         item = dict(row)
         item["stream"] = bool(item["stream"])
         item["success"] = bool(item["success"])
+        if item.get("upstream_cookie") is not None:
+            item["upstream_cookie"] = bool(item["upstream_cookie"])
         logs.append(item)
     return {"enabled": True, "logs": logs, "limit": limit, "offset": offset, "total": total}
 
@@ -259,7 +301,7 @@ def query_logs(params: Dict[str, Any]) -> Dict[str, Any]:
 def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
     """Return aggregate usage statistics for recent API calls."""
     if not analytics_enabled():
-        return {"enabled": False, "summary": {}, "by_day": [], "by_model": [], "by_endpoint": []}
+        return {"enabled": False, "summary": {}, "by_day": [], "by_model": [], "by_endpoint": [], "by_upstream_mode": []}
     init_db()
     days = _parse_positive_int(params.get("days"), 1, 366)
     since_ts = time_window_start(days)
@@ -274,7 +316,11 @@ def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
                        COALESCE(ROUND(AVG(response_ms), 2), 0) AS avg_response_ms,
                        COALESCE(SUM(total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COALESCE(SUM(CASE WHEN upstream_mode = 'cookie' THEN 1 ELSE 0 END), 0) AS cookie_calls,
+                       COALESCE(SUM(CASE WHEN upstream_mode = 'anonymous' THEN 1 ELSE 0 END), 0) AS anonymous_calls,
+                       COALESCE(SUM(CASE WHEN COALESCE(file_ref_count, 0) > 0 THEN 1 ELSE 0 END), 0) AS file_ref_calls,
+                       COALESCE(SUM(file_ref_count), 0) AS total_file_refs
                 FROM api_call_logs
                 {where}
                 """,
@@ -333,6 +379,24 @@ def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
                 args,
             ).fetchall()
         ]
+        by_upstream_mode = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT COALESCE(upstream_mode, 'not_sent') AS upstream_mode,
+                       COUNT(*) AS calls,
+                       COALESCE(SUM(success), 0) AS success_calls,
+                       COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS error_calls,
+                       COALESCE(SUM(file_ref_count), 0) AS file_refs,
+                       COALESCE(ROUND(AVG(response_ms), 2), 0) AS avg_response_ms
+                FROM api_call_logs
+                {where}
+                GROUP BY COALESCE(upstream_mode, 'not_sent')
+                ORDER BY calls DESC, upstream_mode
+                """,
+                args,
+            ).fetchall()
+        ]
     return {
         "enabled": True,
         "days": days,
@@ -340,6 +404,7 @@ def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
         "by_day": by_day,
         "by_model": by_model,
         "by_endpoint": by_endpoint,
+        "by_upstream_mode": by_upstream_mode,
     }
 
 

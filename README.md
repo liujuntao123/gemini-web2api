@@ -82,6 +82,10 @@ Create `config.json` from `config.example.json` and edit as needed:
 {
   "port": 8081,
   "host": "0.0.0.0",
+  "max_request_body_bytes": 52428800,
+  "current_input_file_enabled": true,
+  "current_input_file_min_bytes": 95000,
+  "current_input_file_name": "message.txt",
   "api_keys": ["sk-your-key"],
   "cookie_file": null,
   "proxy": null,
@@ -96,7 +100,10 @@ Notes:
 - Set `api_keys` to `[]` to disable authentication.
 - `/v1/*` endpoints require `Authorization: Bearer <key>` when keys are configured.
 - Set `proxy` if your machine cannot access `gemini.google.com`.
-- Optional cookie support can improve real Pro routing: set `cookie_file` to a cookie file path.
+- Optional cookie support can improve real Pro routing: set `cookie_file` to a cookie file path. The file may contain a raw Cookie header value, a `Cookie: ...` line, a pasted full request header block, or JSON with `cookie`/`headers`.
+- Upstream cookie mode is selected per request. Small text-only prompts are sent without Cookie/Authorization headers. File/image uploads and large-context file references are sent with Cookie/Authorization headers.
+- File upload, image upload, and large prompt attachment mode require `cookie_file`.
+- `current_input_file_enabled` is enabled by default. When a structured chat/history request exceeds `current_input_file_min_bytes` and `cookie_file` is available, prior context is uploaded as `current_input_file_name` and bound to Gemini Web as a file reference while the latest user turn stays inline.
 
 ## Usage Dashboard
 
@@ -171,7 +178,7 @@ Supported native endpoints:
 - Gemini Web behavior can change and may break this bridge.
 - Requests are single-turn; multi-turn context is passed in the prompt.
 - Google may rate-limit high-frequency use.
-- OpenAI `image_url` input is limited; Google native `inlineData` images are uploaded through Gemini Web.
+- OpenAI `image_url`, Responses `input_file`, Google native `inlineData`, and Google native HTTP `fileData` inputs are uploaded through Gemini Web when cookies are configured.
 - Without suitable cookies, Pro/Ultra labels may not mean real upstream Pro/Ultra routing.
 
 ## License

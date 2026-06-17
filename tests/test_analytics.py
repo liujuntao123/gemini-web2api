@@ -55,6 +55,9 @@ def test_record_call_and_query_logs(monkeypatch, tmp_path):
         "total_tokens": 15,
         "image_count": 0,
         "tool_count": 0,
+        "upstream_mode": "anonymous",
+        "upstream_cookie": False,
+        "file_ref_count": 0,
     })
 
     result = analytics.query_logs({"limit": "10"})
@@ -65,6 +68,9 @@ def test_record_call_and_query_logs(monkeypatch, tmp_path):
     assert result["logs"][0]["model"] == "gemini-3.5-flash"
     assert result["logs"][0]["success"] is True
     assert result["logs"][0]["response_ms"] == 123
+    assert result["logs"][0]["upstream_mode"] == "anonymous"
+    assert result["logs"][0]["upstream_cookie"] is False
+    assert result["logs"][0]["file_ref_count"] == 0
 
 
 def test_usage_stats_groups_by_day_model_and_endpoint(monkeypatch, tmp_path):
@@ -77,6 +83,9 @@ def test_usage_stats_groups_by_day_model_and_endpoint(monkeypatch, tmp_path):
         "status_code": 200,
         "response_ms": 100,
         "total_tokens": 12,
+        "upstream_mode": "anonymous",
+        "upstream_cookie": False,
+        "file_ref_count": 0,
     })
     analytics.record_call({
         "request_id": "fail",
@@ -88,6 +97,9 @@ def test_usage_stats_groups_by_day_model_and_endpoint(monkeypatch, tmp_path):
         "response_ms": 300,
         "error_type": "upstream_error",
         "total_tokens": 0,
+        "upstream_mode": "cookie",
+        "upstream_cookie": True,
+        "file_ref_count": 2,
     })
 
     stats = analytics.usage_stats({"days": "1"})
@@ -97,12 +109,17 @@ def test_usage_stats_groups_by_day_model_and_endpoint(monkeypatch, tmp_path):
     assert stats["summary"]["error_calls"] == 1
     assert stats["summary"]["avg_response_ms"] == 200
     assert stats["summary"]["total_tokens"] == 12
+    assert stats["summary"]["anonymous_calls"] == 1
+    assert stats["summary"]["cookie_calls"] == 1
+    assert stats["summary"]["file_ref_calls"] == 1
+    assert stats["summary"]["total_file_refs"] == 2
     assert stats["by_day"][0]["calls"] == 2
     assert stats["by_model"][0]["model"] == "gemini-3.5-flash"
     assert {item["endpoint"] for item in stats["by_endpoint"]} == {
         "/v1/chat/completions",
         "/v1/responses",
     }
+    assert {item["upstream_mode"] for item in stats["by_upstream_mode"]} == {"anonymous", "cookie"}
 
 
 def test_analytics_disabled_does_not_record(monkeypatch, tmp_path):
@@ -155,6 +172,8 @@ def test_chat_completion_writes_usage_log_and_stats(monkeypatch, tmp_path):
     assert logs["total"] == 1
     assert logs["logs"][0]["endpoint"] == "/v1/chat/completions"
     assert logs["logs"][0]["response_chars"] == len("mock reply")
+    assert logs["logs"][0]["upstream_mode"] == "anonymous"
+    assert logs["logs"][0]["file_ref_count"] == 0
 
 
 def test_dashboard_page_is_served_without_api_key(monkeypatch, tmp_path):
@@ -176,6 +195,7 @@ def test_dashboard_page_is_served_without_api_key(monkeypatch, tmp_path):
     assert "gemini-web2api 调用看板" in html
     assert "/v1/usage/stats" in html
     assert "/v1/usage/logs" in html
+    assert "上游模式" in html
 
 
 def test_usage_api_still_requires_configured_api_key(monkeypatch, tmp_path):

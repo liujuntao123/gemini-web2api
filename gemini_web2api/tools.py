@@ -4,6 +4,8 @@ import re
 import uuid
 import base64
 import binascii
+import mimetypes
+from urllib.parse import urlparse
 
 
 def _build_tool_choice_instruction(tool_choice, tool_defs: list) -> str:
@@ -26,13 +28,334 @@ def _build_tool_choice_instruction(tool_choice, tool_defs: list) -> str:
     return ""
 
 
-def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> tuple:
-    """Convert OpenAI messages to (prompt_str, images_list).
+def openai_tool_defs(tools: list) -> list:
+    """Return compact OpenAI function tool definitions."""
+    out = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function", tool) if tool.get("type") == "function" else tool
+        name = fn.get("name") or tool.get("name") or ""
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "description": fn.get("description", tool.get("description", "")),
+            "parameters": fn.get("parameters", tool.get("parameters", {})),
+        })
+    return out
 
-    Returns (prompt, images) where images is a list of (bytes, mime_type) tuples.
+
+def google_tool_defs(req: dict) -> list:
+    """Return compact Google native function tool definitions."""
+    out = []
+    for group in (req or {}).get("tools") or []:
+        if not isinstance(group, dict):
+            continue
+        for fn in group.get("functionDeclarations") or group.get("function_declarations") or []:
+            if not isinstance(fn, dict) or not fn.get("name"):
+                continue
+            out.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters") or fn.get("parametersJsonSchema") or fn.get("parameters_json_schema") or {},
+            })
+    return out
+
+
+def build_tools_context_transcript(tool_defs: list, choice_instruction: str = "", filename: str = "tools.txt") -> str:
+    if not tool_defs:
+        return ""
+    policy = f"\n\nTool choice policy:\n{choice_instruction.strip()}\n" if choice_instruction else "\n"
+    return (
+        f"# {filename or 'tools.txt'}\n"
+        "Available tool descriptions and parameter schemas.\n\n"
+        f"{json.dumps(tool_defs, indent=2, ensure_ascii=False)}"
+        f"{policy}"
+    )
+
+
+def normalize_history_role(role) -> str:
+    role = str(role or "").strip().lower()
+    if role == "function":
+        return "tool"
+    if role == "developer":
+        return "system"
+    return role or "user"
+
+
+def _role_label(role) -> str:
+    return (normalize_history_role(role) or "unknown").upper()
+
+
+def _content_text_for_history(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (int, float, bool)):
+        return str(content)
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item.get("input_text"), str):
+                parts.append(item["input_text"])
+            elif item.get("type") in ("input_file", "file"):
+                suffix = f" {item.get('file_id')}" if item.get("file_id") else ""
+                parts.append(f"[file input{suffix}]")
+            elif item.get("type") in ("image_url", "input_image", "image") or item.get("image_url") or item.get("inlineData"):
+                parts.append("[image input]")
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        if isinstance(content.get("text"), str):
+            return content["text"]
+        if isinstance(content.get("output"), str):
+            return content["output"]
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def _parse_json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def build_openai_history_transcript(messages: list, filename: str = "message.txt") -> str:
+    entries = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = normalize_history_role(msg.get("role"))
+        content = _content_text_for_history(msg.get("content"))
+        if role == "assistant" and msg.get("tool_calls"):
+            blocks = []
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                blocks.append(
+                    "```tool_call\n"
+                    + json.dumps({"name": fn.get("name", ""), "arguments": _parse_json_object(fn.get("arguments", "{}"))}, ensure_ascii=False)
+                    + "\n```"
+                )
+            content = "\n\n".join([content, *blocks]).strip()
+        elif role == "tool":
+            meta = []
+            if msg.get("name"):
+                meta.append(f"name={msg.get('name')}")
+            if msg.get("tool_call_id"):
+                meta.append(f"tool_call_id={msg.get('tool_call_id')}")
+            prefix = f"[{' '.join(meta)}]\n" if meta else ""
+            content = prefix + (content.strip() or "null")
+        content = str(content or "").strip()
+        if content:
+            entries.append({"role": role, "content": content})
+    if not entries:
+        return ""
+    sections = [f"=== {i}. {_role_label(e['role'])} ===\n{e['content']}" for i, e in enumerate(entries, 1)]
+    return f"# {filename or 'message.txt'}\nPrior conversation history and tool progress.\n\n" + "\n\n".join(sections) + "\n"
+
+
+def build_google_history_transcript(req: dict, filename: str = "message.txt") -> str:
+    messages = []
+    sys_inst = (req or {}).get("systemInstruction")
+    if isinstance(sys_inst, dict):
+        text = "\n".join(p.get("text", "") for p in sys_inst.get("parts", []) if isinstance(p, dict) and p.get("text"))
+        if text:
+            messages.append({"role": "system", "content": text})
+    for content in (req or {}).get("contents") or []:
+        if not isinstance(content, dict):
+            continue
+        parts = []
+        for p in content.get("parts") or []:
+            if not isinstance(p, dict):
+                continue
+            if p.get("text"):
+                parts.append(p["text"])
+            elif p.get("inlineData"):
+                parts.append("[image input]")
+            elif p.get("fileData"):
+                uri = p["fileData"].get("fileUri") or p["fileData"].get("uri") or ""
+                parts.append(f"[file input {uri}]".strip())
+            elif p.get("functionCall"):
+                fc = p["functionCall"]
+                parts.append(
+                    "```function_call\n"
+                    + json.dumps({"name": fc.get("name", ""), "args": fc.get("args", {})}, ensure_ascii=False)
+                    + "\n```"
+                )
+            elif p.get("functionResponse"):
+                fr = p["functionResponse"]
+                parts.append(f"[Tool result for {fr.get('name', '')}]: {json.dumps(fr.get('response', {}), ensure_ascii=False)}")
+        messages.append({"role": "assistant" if content.get("role") == "model" else "user", "content": "\n".join(parts)})
+    return build_openai_history_transcript(messages, filename)
+
+
+def latest_openai_user_input_text(messages: list) -> str:
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        if normalize_history_role(msg.get("role")) != "user":
+            continue
+        text = _content_text_for_history(msg.get("content")).strip()
+        if text:
+            return text
+    return ""
+
+
+def latest_google_user_input_text(req: dict) -> str:
+    contents = (req or {}).get("contents") or []
+    for content in reversed(contents):
+        if not isinstance(content, dict) or content.get("role") == "model":
+            continue
+        parts = []
+        for p in content.get("parts") or []:
+            if not isinstance(p, dict):
+                continue
+            if p.get("text"):
+                parts.append(p["text"])
+            elif p.get("inlineData"):
+                parts.append("[image input]")
+            elif p.get("fileData"):
+                uri = p["fileData"].get("fileUri") or p["fileData"].get("uri") or ""
+                parts.append(f"[file input {uri}]".strip())
+        text = "\n".join(parts).strip()
+        if text:
+            return text
+    return ""
+
+
+def parse_data_url(url: str) -> dict:
+    """Parse a data: URL into attachment metadata."""
+    if not url or not isinstance(url, str):
+        return None
+    m = re.match(r"^data:([^,]*?);base64,([\s\S]*)$", url, re.IGNORECASE)
+    if not m:
+        return None
+    mime_type = (m.group(1).split(";")[0] or "application/octet-stream").lower()
+    try:
+        return {"data": base64.b64decode(m.group(2), validate=True), "mime_type": mime_type}
+    except (binascii.Error, ValueError):
+        return None
+
+
+def parse_image_url(url: str) -> dict:
+    """Parse an OpenAI image_url value into attachment metadata."""
+    parsed = parse_data_url(url)
+    if parsed:
+        parsed["name"] = _filename_for_mime(parsed["mime_type"], "image.png")
+        return parsed
+    if isinstance(url, str) and re.match(r"^https?://", url, re.IGNORECASE):
+        return {"url": url, "mime_type": "image/png", "name": _filename_from_url(url, "image.png")}
+    return None
+
+
+def _filename_for_mime(mime_type: str, default: str) -> str:
+    mime_type = (mime_type or "").split(";")[0].lower()
+    if mime_type.startswith("image/"):
+        ext = mime_type.split("/", 1)[1] or "png"
+        return f"image.{ext}"
+    ext = mimetypes.guess_extension(mime_type)
+    return f"file{ext}" if ext else default
+
+
+def _filename_from_url(url: str, default: str) -> str:
+    path = urlparse(url).path
+    name = path.rsplit("/", 1)[-1] if path else ""
+    return name or default
+
+
+def _append_input_file(attachments: list, item: dict, text_parts: list):
+    file_value = item.get("file") if isinstance(item.get("file"), dict) else item
+    filename = file_value.get("filename") or file_value.get("name") or "file"
+    mime_type = file_value.get("mime_type") or file_value.get("mimeType") or "application/octet-stream"
+    file_data = file_value.get("file_data") or file_value.get("data")
+    file_url = file_value.get("file_url") or file_value.get("url")
+
+    if file_data:
+        parsed = parse_data_url(file_data)
+        if parsed:
+            parsed["name"] = filename
+            if not file_value.get("mime_type") and not file_value.get("mimeType"):
+                mime_type = parsed["mime_type"]
+            parsed["mime_type"] = mime_type
+            attachments.append(parsed)
+            return
+        try:
+            attachments.append({
+                "data": base64.b64decode(file_data, validate=True),
+                "mime_type": mime_type,
+                "name": filename,
+            })
+            return
+        except (binascii.Error, ValueError, TypeError):
+            pass
+    if file_url and re.match(r"^https?://", file_url, re.IGNORECASE):
+        attachments.append({"url": file_url, "mime_type": mime_type, "name": filename})
+        return
+    text_parts.append("[Note: Invalid file input was ignored.]")
+
+
+def _content_list_to_text_and_attachments(content: list, image_note: bool = False) -> tuple:
+    text_parts = []
+    attachments = []
+    for c in content:
+        if not isinstance(c, dict):
+            continue
+        ctype = c.get("type")
+        if ctype in ("text", "input_text"):
+            text_parts.append(c.get("text", ""))
+        elif ctype in ("image_url", "input_image"):
+            url = None
+            if isinstance(c.get("image_url"), dict):
+                url = c["image_url"].get("url")
+            elif isinstance(c.get("image_url"), str):
+                url = c.get("image_url")
+            else:
+                url = c.get("image_url") or c.get("image_url_data") or c.get("url")
+            image = parse_image_url(url)
+            if image:
+                attachments.append(image)
+            elif image_note:
+                text_parts.append("[Note: Invalid image input was ignored.]")
+        elif ctype in ("image", "input_file", "file"):
+            if ctype == "image":
+                data = c.get("data") or c.get("image")
+                mime_type = c.get("mime_type") or c.get("mimeType") or "image/png"
+                parsed = parse_data_url(data)
+                if parsed:
+                    parsed["name"] = "image.png"
+                    attachments.append(parsed)
+                elif data:
+                    try:
+                        attachments.append({
+                            "data": base64.b64decode(data, validate=True),
+                            "mime_type": mime_type,
+                            "name": "image.png",
+                        })
+                    except (binascii.Error, ValueError, TypeError):
+                        text_parts.append("[Note: Invalid image input was ignored.]")
+            else:
+                _append_input_file(attachments, c, text_parts)
+    return "\n".join(text_parts), attachments
+
+
+def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> tuple:
+    """Convert OpenAI messages to (prompt_str, attachments_list).
+
+    Returns (prompt, attachments) where attachments contains file upload specs.
     """
     parts = []
-    images = []
+    attachments = []
 
     if tools and tool_choice != "none":
         tool_defs = []
@@ -61,17 +384,8 @@ def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> 
         content = msg.get("content", "")
 
         if isinstance(content, list):
-            text_parts = []
-            for c in content:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") in ("text", "input_text"):
-                    text_parts.append(c.get("text", ""))
-                elif c.get("type") == "image_url":
-                    text_parts.append("[Note: Image input not supported in this API. Please describe the image in text.]")
-                elif c.get("type") == "image":
-                    text_parts.append("[Note: Image input not supported in this API. Please describe the image in text.]")
-            content = "\n".join(text_parts)
+            content, found = _content_list_to_text_and_attachments(content, image_note=True)
+            attachments.extend(found)
 
         if role == "system":
             parts.append(f"[System instruction]: {content}")
@@ -93,7 +407,7 @@ def messages_to_prompt(messages: list, tools: list = None, tool_choice=None) -> 
             parts.append(content if content else "")
 
     prompt = "\n\n".join(p for p in parts if p)
-    return prompt, images
+    return prompt, attachments
 
 
 def parse_tool_calls(text: str) -> tuple:
@@ -162,12 +476,12 @@ def _google_tool_choice_instruction(req: dict) -> str:
 
 
 def google_contents_to_prompt(req: dict) -> tuple:
-    """Convert Google API contents/tools/systemInstruction to (prompt_str, images_list).
+    """Convert Google API contents/tools/systemInstruction to (prompt_str, attachments_list).
 
-    Returns (prompt, images) where images is a list of (bytes, mime_type) tuples.
+    Returns (prompt, attachments) where attachments contains file upload specs.
     """
     parts = []
-    images = []
+    attachments = []
 
     tool_config = req.get("toolConfig", {})
     fc_mode = tool_config.get("functionCallingConfig", {}).get("mode", "AUTO")
@@ -211,9 +525,21 @@ def google_contents_to_prompt(req: dict) -> tuple:
                 data = p["inlineData"]
                 mime = data.get("mimeType", "image/png")
                 try:
-                    images.append((base64.b64decode(data["data"], validate=True), mime))
+                    attachments.append({
+                        "data": base64.b64decode(data["data"], validate=True),
+                        "mime_type": mime,
+                        "name": "image.png" if mime.startswith("image/") else "file",
+                    })
                 except (KeyError, TypeError, binascii.Error, ValueError):
                     msg_parts.append("[Note: Invalid image input was ignored.]")
+            elif p.get("fileData"):
+                file_data = p["fileData"]
+                uri = file_data.get("fileUri") or file_data.get("uri")
+                mime = file_data.get("mimeType") or "application/octet-stream"
+                if uri and re.match(r"^https?://", uri, re.IGNORECASE):
+                    attachments.append({"url": uri, "mime_type": mime, "name": file_data.get("displayName") or "file"})
+                else:
+                    msg_parts.append("[Note: Invalid file input was ignored.]")
             elif p.get("functionCall"):
                 fc = p["functionCall"]
                 msg_parts.append(
@@ -230,7 +556,7 @@ def google_contents_to_prompt(req: dict) -> tuple:
         else:
             parts.append(text)
 
-    return "\n\n".join(p for p in parts if p), images
+    return "\n\n".join(p for p in parts if p), attachments
 
 
 def google_tool_names(req: dict) -> set:

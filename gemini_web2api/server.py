@@ -14,13 +14,21 @@ from .dashboard import dashboard_html
 from .models import MODELS, resolve_model
 from .gemini import generate, generate_stream, log
 from .tools import (
+    _build_tool_choice_instruction,
+    build_google_history_transcript,
+    build_openai_history_transcript,
+    build_tools_context_transcript,
+    google_tool_defs,
     messages_to_prompt,
+    latest_google_user_input_text,
+    latest_openai_user_input_text,
+    openai_tool_defs,
     parse_tool_calls,
     google_contents_to_prompt,
     parse_google_function_calls,
     google_tool_names,
 )
-from .multimodal import upload_image, fetch_image_bytes
+from .multimodal import has_cookie, prompt_byte_length, resolve_upload_files, upload_text_file
 from . import __version__
 
 
@@ -49,13 +57,14 @@ def _max_request_body_bytes() -> Optional[int]:
     local server-side cap, leaving upstream/model limits to decide whether a
     prompt is acceptable.
     """
-    raw_value = CONFIG.get("max_request_body_bytes", 10 * 1024 * 1024)
+    default_limit = 50 * 1024 * 1024
+    raw_value = CONFIG.get("max_request_body_bytes", default_limit)
     if raw_value is None:
         return None
     try:
         value = int(raw_value)
     except (TypeError, ValueError):
-        return 10 * 1024 * 1024
+        return default_limit
     return value if value > 0 else None
 
 
@@ -75,6 +84,7 @@ def _upstream_prompt_size_error(
     prompt: str,
     model_id: int,
     think_mode: int,
+    file_refs: list = None,
     extra_fields: dict = None,
 ) -> Optional[dict]:
     max_prompt = _max_upstream_prompt_bytes()
@@ -83,7 +93,7 @@ def _upstream_prompt_size_error(
 
     from .gemini import _build_payload
 
-    upstream_bytes = len(_build_payload(prompt, model_id, think_mode, None, extra_fields).encode())
+    upstream_bytes = len(_build_payload(prompt, model_id, think_mode, file_refs, extra_fields).encode())
     if upstream_bytes <= max_prompt:
         return None
     return {
@@ -91,6 +101,15 @@ def _upstream_prompt_size_error(
         "upstream_prompt_bytes": upstream_bytes,
         "limit": max_prompt,
     }
+
+
+def _use_cookie_for_upstream(file_refs: list = None) -> bool:
+    """Use Gemini cookie mode only when the upstream request binds uploaded files."""
+    return bool(file_refs)
+
+
+def _upstream_mode(use_cookie: bool) -> str:
+    return "cookie" if use_cookie else "anonymous"
 
 
 def _configured_api_keys() -> set:
@@ -102,24 +121,192 @@ def _configured_api_keys() -> set:
     return {str(key) for key in keys if key}
 
 
-def _upload_images(images: list) -> list:
-    """Upload images and return list of file references. Returns None if no images."""
-    if not images:
+def _attachment_prompt() -> str:
+    configured = CONFIG.get("current_input_file_prompt")
+    if configured:
+        return configured
+    history_name = CONFIG.get("current_input_file_name") or "message.txt"
+    return (
+        f"Context is attached in `{history_name}`. Acknowledge it briefly, "
+        "then treat it as the primary user input for this turn and answer based on it."
+    )
+
+
+def _single_context_file_prompt() -> str:
+    history_name = CONFIG.get("current_input_file_name") or "message.txt"
+    return (
+        f"Context is attached in `{history_name}`. Treat the file as the complete user input "
+        "for this turn. Read the instructions and any question inside it, then answer directly."
+    )
+
+
+def _context_file_threshold() -> int:
+    try:
+        return max(0, int(CONFIG.get("current_input_file_min_bytes") or 0))
+    except (TypeError, ValueError):
+        return 95000
+
+
+def _should_consider_context_files(prompt: str) -> bool:
+    return (
+        bool(CONFIG.get("current_input_file_enabled"))
+        and has_cookie()
+        and _context_file_threshold() > 0
+        and prompt_byte_length(prompt) > _context_file_threshold()
+    )
+
+
+def _latest_input_inline_limit() -> int:
+    threshold = _context_file_threshold() or 95000
+    return max(4000, min(16000, threshold // 6))
+
+
+def _latest_input_prompt_for_context_file(latest_input: str) -> str:
+    latest = str(latest_input or "").strip()
+    if not latest:
+        return ""
+    if prompt_byte_length(latest) <= _latest_input_inline_limit():
+        return "Latest user request:\n" + latest
+    history_name = CONFIG.get("current_input_file_name") or "message.txt"
+    return (
+        f"The latest user request is at the end of `{history_name}`; do not duplicate it inline.\n"
+        "Read it from the txt file and answer directly."
+    )
+
+
+def _context_upload_failure(kind: str, prompt: str, cause: Exception) -> RuntimeError:
+    err = RuntimeError(
+        f"failed to upload {kind or 'context'} text file for large prompt; "
+        "refusing to fall back to oversized inline context"
+    )
+    err.code = "large_context_file_upload_failed"
+    err.prompt_bytes = prompt_byte_length(prompt)
+    err.__cause__ = cause
+    return err
+
+
+def _prepare_context_files(
+    history_text: str,
+    tool_defs: list,
+    choice_instruction: str,
+    latest_input: str,
+    prompt: str,
+) -> Optional[dict]:
+    if not _should_consider_context_files(prompt or history_text):
         return None
-    file_refs = []
-    for item in images:
+    if not str(history_text or "").strip() or not str(latest_input or "").strip():
+        return None
+
+    refs = []
+    history_name = CONFIG.get("current_input_file_name") or "message.txt"
+    tools_name = CONFIG.get("current_tools_file_name") or "tools.txt"
+    tools_text = build_tools_context_transcript(tool_defs, choice_instruction, tools_name)
+    tools_attached = False
+
+    try:
+        refs.append(upload_text_file(history_text, history_name))
+    except Exception as e:
+        log(f"history context file upload failed for large prompt: {e}")
+        raise _context_upload_failure("history context", prompt, e)
+
+    if tools_text.strip():
         try:
-            if isinstance(item, tuple) and len(item) == 2:
-                data, mime = item
-                if isinstance(data, str):
-                    data = fetch_image_bytes(data)
-                    mime = mime or "image/png"
-                if data:
-                    ref = upload_image(data, "image.png", mime or "image/png")
-                    file_refs.append(ref)
+            refs.append(upload_text_file(tools_text, tools_name))
+            tools_attached = True
         except Exception as e:
-            log(f"Image upload failed: {e}")
-    return file_refs if file_refs else None
+            log(f"tools context file upload failed for large prompt: {e}")
+            raise _context_upload_failure("tools context", prompt, e)
+
+    live_prompt_parts = [
+        choice_instruction,
+        _attachment_prompt(),
+        _latest_input_prompt_for_context_file(latest_input),
+        tools_text if tools_text.strip() and not tools_attached else "",
+    ]
+    live_prompt = "\n\n".join(p.strip() for p in live_prompt_parts if str(p or "").strip())
+    prompt_token_text = "\n".join(p for p in [history_text, tools_text, live_prompt] if p)
+    log(
+        "context files enabled: "
+        f"refs={len(refs)} history_bytes={prompt_byte_length(history_text)} "
+        f"tools_bytes={prompt_byte_length(tools_text)} latest_bytes={prompt_byte_length(latest_input)} "
+        f"live_prompt_bytes={prompt_byte_length(live_prompt)}"
+    )
+    return {"prompt": live_prompt, "file_refs": refs, "prompt_token_text": prompt_token_text}
+
+
+def _prepare_file_refs(
+    prompt: str,
+    attachments: list = None,
+    history_text: str = None,
+    tool_defs: list = None,
+    choice_instruction: str = "",
+    latest_input: str = "",
+) -> tuple:
+    """Upload request attachments and large prompt text, returning (prompt, file_refs)."""
+    file_refs = []
+    attachments = attachments or []
+    if attachments:
+        uploaded, note = resolve_upload_files(attachments)
+        if uploaded:
+            file_refs.extend(uploaded)
+        if note:
+            prompt = (prompt + "\n\n" if prompt else "") + note
+
+    context_files = _prepare_context_files(
+        history_text,
+        tool_defs or [],
+        choice_instruction,
+        latest_input,
+        prompt,
+    )
+    if context_files:
+        file_refs.extend(context_files["file_refs"])
+        prompt = context_files["prompt"]
+
+    if file_refs and not prompt.strip():
+        prompt = _attachment_prompt()
+
+    return prompt, file_refs or None
+
+
+def _prepare_openai_file_refs(prompt: str, attachments: list, messages: list, tools: list, tool_choice) -> tuple:
+    tool_defs = openai_tool_defs(tools)
+    choice_instruction = _build_tool_choice_instruction(tool_choice, tool_defs) if tool_defs and tool_choice != "none" else ""
+    history_text = build_openai_history_transcript(messages, CONFIG.get("current_input_file_name") or "message.txt")
+    return _prepare_file_refs(
+        prompt,
+        attachments,
+        history_text=history_text,
+        tool_defs=tool_defs,
+        choice_instruction=choice_instruction,
+        latest_input=latest_openai_user_input_text(messages),
+    )
+
+
+def _prepare_google_file_refs(prompt: str, attachments: list, req: dict) -> tuple:
+    tool_defs = google_tool_defs(req)
+    choice_instruction = ""
+    tool_config = req.get("toolConfig", {})
+    fc_config = tool_config.get("functionCallingConfig", {})
+    mode = fc_config.get("mode", "AUTO")
+    allowed = fc_config.get("allowedFunctionNames", [])
+    if mode == "NONE":
+        choice_instruction = "\n\nIMPORTANT: Do NOT call any tools. Respond with text only."
+    elif mode == "ANY":
+        if allowed:
+            names = ", ".join(f'"{n}"' for n in allowed)
+            choice_instruction = f"\n\nIMPORTANT: You MUST call one of these tools: {names}. Do not respond with text only."
+        else:
+            choice_instruction = "\n\nIMPORTANT: You MUST call at least one tool. Do not respond with text only."
+    history_text = build_google_history_transcript(req, CONFIG.get("current_input_file_name") or "message.txt")
+    return _prepare_file_refs(
+        prompt,
+        attachments,
+        history_text=history_text,
+        tool_defs=tool_defs,
+        choice_instruction=choice_instruction,
+        latest_input=latest_google_user_input_text(req),
+    )
 
 
 class GeminiHandler(BaseHTTPRequestHandler):
@@ -324,11 +511,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         tools = req.get("tools")
         tool_choice = req.get("tool_choice", "auto")
-        prompt, images = messages_to_prompt(req.get("messages", []), tools, tool_choice)
-        if not prompt.strip():
+        prompt, attachments = messages_to_prompt(req.get("messages", []), tools, tool_choice)
+        if not prompt.strip() and not attachments:
             self._update_call_log(
                 prompt_chars=len(prompt),
-                image_count=len(images),
+                image_count=len(attachments),
                 tool_count=len(tools or []),
                 error_type="bad_request",
                 error_message="empty prompt",
@@ -341,15 +528,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
             stream=bool(stream),
             prompt_chars=len(prompt),
             prompt_tokens=len(prompt) // 4,
-            image_count=len(images),
+            image_count=len(attachments),
             tool_count=len(tools or []),
         )
         cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         log(
             f"request {req_id}: chat model={model_name} stream={stream} "
-            f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
+            f"tools={bool(tools)} prompt_len={len(prompt)} attachments={len(attachments)}"
         )
-        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        try:
+            prompt, file_refs = _prepare_openai_file_refs(prompt, attachments, req.get("messages", []), tools, tool_choice)
+        except Exception as e:
+            self._update_call_log(error_type=e.__class__.__name__, error_message=f"upload error: {e}")
+            self.send_json({"error": {"message": f"upload error: {e}"}}, 502)
+            return
+        use_cookie = _use_cookie_for_upstream(file_refs)
+        upstream_mode = _upstream_mode(use_cookie)
+        self._update_call_log(upstream_mode=upstream_mode, upstream_cookie=use_cookie, file_ref_count=len(file_refs or []))
+        log(f"request {req_id}: chat upstream_mode={upstream_mode} file_refs={len(file_refs or [])}")
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, file_refs, extra_fields)
         if size_error:
             log(
                 f"request {req_id}: upstream prompt too large "
@@ -363,7 +560,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             try:
                 chunks = 0
                 total_chars = 0
-                stream_iter = generate_stream(prompt, model_id, think_mode, _upload_images(images), extra_fields)
+                stream_iter = generate_stream(prompt, model_id, think_mode, file_refs, extra_fields, use_cookie=use_cookie)
                 try:
                     first_delta = next(stream_iter)
                 except StopIteration:
@@ -411,7 +608,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            text = generate(prompt, model_id, think_mode, _upload_images(images), extra_fields)
+            text = generate(prompt, model_id, think_mode, file_refs, extra_fields, use_cookie=use_cookie)
         except Exception as e:
             self._update_call_log(error_type=e.__class__.__name__, error_message=f"upstream error: {e}")
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
@@ -475,14 +672,23 @@ class GeminiHandler(BaseHTTPRequestHandler):
         if isinstance(input_items, str):
             messages.append({"role": "user", "content": input_items})
         elif isinstance(input_items, list):
+            fallback_content = []
+
+            def flush_fallback_content():
+                if fallback_content:
+                    messages.append({"role": "user", "content": list(fallback_content)})
+                    fallback_content.clear()
+
             for item in input_items:
                 if isinstance(item, str):
-                    messages.append({"role": "user", "content": item})
+                    fallback_content.append({"type": "input_text", "text": item})
                 elif isinstance(item, dict):
                     if item.get("type") == "function_call_output":
+                        flush_fallback_content()
                         messages.append({"role": "tool", "tool_call_id": item.get("call_id", ""),
                                          "name": item.get("name", ""), "content": item.get("output", "")})
                     elif item.get("role") == "assistant" or (item.get("type") == "message" and item.get("role") == "assistant"):
+                        flush_fallback_content()
                         cp = item.get("content", [])
                         text_acc, tc_list = "", []
                         if isinstance(cp, list):
@@ -498,23 +704,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
                                                 "function": {"name": tc.get("name",""), "arguments": tc.get("arguments","{}")}}
                                                for i, tc in enumerate(tc_list)]
                         messages.append(m)
+                    elif item.get("type") in ("input_text", "text", "input_file", "file", "input_image", "image_url", "image"):
+                        fallback_content.append(item)
                     else:
+                        flush_fallback_content()
                         role = item.get("role", "user")
                         content = item.get("content", "")
-                        if isinstance(content, list):
-                            content = "\n".join(c.get("text", "") for c in content if c.get("type") in ("text", "input_text"))
                         messages.append({"role": role, "content": content})
+            flush_fallback_content()
 
         if tools:
             tools = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t.get("parameters", {})}}
                      if t.get("type") == "function" and "function" not in t else t for t in tools]
 
         tool_choice = req.get("tool_choice", "auto")
-        prompt, images = messages_to_prompt(messages, tools, tool_choice)
-        if not prompt.strip():
+        prompt, attachments = messages_to_prompt(messages, tools, tool_choice)
+        if not prompt.strip() and not attachments:
             self._update_call_log(
                 prompt_chars=len(prompt),
-                image_count=len(images),
+                image_count=len(attachments),
                 tool_count=len(tools or []),
                 error_type="bad_request",
                 error_message="empty input",
@@ -524,14 +732,24 @@ class GeminiHandler(BaseHTTPRequestHandler):
         self._update_call_log(
             prompt_chars=len(prompt),
             prompt_tokens=len(prompt) // 4,
-            image_count=len(images),
+            image_count=len(attachments),
             tool_count=len(tools or []),
         )
         log(
             f"request {req_id}: responses model={model_name} stream={bool(req.get('stream'))} "
-            f"tools={bool(tools)} prompt_len={len(prompt)} images={len(images)}"
+            f"tools={bool(tools)} prompt_len={len(prompt)} attachments={len(attachments)}"
         )
-        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        try:
+            prompt, file_refs = _prepare_openai_file_refs(prompt, attachments, messages, tools, tool_choice)
+        except Exception as e:
+            self._update_call_log(error_type=e.__class__.__name__, error_message=f"upload error: {e}")
+            self.send_json({"error": {"message": f"upload error: {e}"}}, 502)
+            return
+        use_cookie = _use_cookie_for_upstream(file_refs)
+        upstream_mode = _upstream_mode(use_cookie)
+        self._update_call_log(upstream_mode=upstream_mode, upstream_cookie=use_cookie, file_ref_count=len(file_refs or []))
+        log(f"request {req_id}: responses upstream_mode={upstream_mode} file_refs={len(file_refs or [])}")
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, file_refs, extra_fields)
         if size_error:
             log(
                 f"request {req_id}: upstream prompt too large "
@@ -542,7 +760,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            text = generate(prompt, model_id, think_mode, _upload_images(images), extra_fields)
+            text = generate(prompt, model_id, think_mode, file_refs, extra_fields, use_cookie=use_cookie)
         except Exception as e:
             self._update_call_log(error_type=e.__class__.__name__, error_message=f"upstream error: {e}")
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
@@ -620,11 +838,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
         tool_config = req.get("toolConfig", {})
         fc_mode = tool_config.get("functionCallingConfig", {}).get("mode", "AUTO")
         has_tools = bool(req.get("tools")) and fc_mode != "NONE"
-        prompt, images = google_contents_to_prompt(req)
-        if not prompt.strip():
+        prompt, attachments = google_contents_to_prompt(req)
+        if not prompt.strip() and not attachments:
             self._update_call_log(
                 prompt_chars=len(prompt),
-                image_count=len(images),
+                image_count=len(attachments),
                 tool_count=len(req.get("tools") or []),
                 error_type="bad_request",
                 error_message="empty content",
@@ -632,19 +850,28 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.send_json({"error": {"message": "empty content"}}, 400)
             return
 
-        file_refs = _upload_images(images)
         allowed_tool_names = google_tool_names(req)
         self._update_call_log(
             prompt_chars=len(prompt),
             prompt_tokens=len(prompt) // 4,
-            image_count=len(images),
+            image_count=len(attachments),
             tool_count=len(req.get("tools") or []),
         )
         log(
             f"request {req_id}: google model={model_name} stream={stream} tools={has_tools} "
-            f"tool_names={len(allowed_tool_names)} prompt_len={len(prompt)} images={len(images)}"
+            f"tool_names={len(allowed_tool_names)} prompt_len={len(prompt)} attachments={len(attachments)}"
         )
-        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, extra_fields)
+        try:
+            prompt, file_refs = _prepare_google_file_refs(prompt, attachments, req)
+        except Exception as e:
+            self._update_call_log(error_type=e.__class__.__name__, error_message=f"upload error: {e}")
+            self.send_json({"error": {"message": f"upload error: {e}"}}, 502)
+            return
+        use_cookie = _use_cookie_for_upstream(file_refs)
+        upstream_mode = _upstream_mode(use_cookie)
+        self._update_call_log(upstream_mode=upstream_mode, upstream_cookie=use_cookie, file_ref_count=len(file_refs or []))
+        log(f"request {req_id}: google upstream_mode={upstream_mode} file_refs={len(file_refs or [])}")
+        size_error = _upstream_prompt_size_error(prompt, model_id, think_mode, file_refs, extra_fields)
         if size_error:
             log(
                 f"request {req_id}: upstream prompt too large "
@@ -658,7 +885,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             try:
                 full_text = ""
                 chunks = 0
-                stream_iter = generate_stream(prompt, model_id, think_mode, file_refs, extra_fields)
+                stream_iter = generate_stream(prompt, model_id, think_mode, file_refs, extra_fields, use_cookie=use_cookie)
                 try:
                     first_delta = next(stream_iter)
                 except StopIteration:
@@ -720,7 +947,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            text = generate(prompt, model_id, think_mode, file_refs, extra_fields)
+            text = generate(prompt, model_id, think_mode, file_refs, extra_fields, use_cookie=use_cookie)
         except Exception as e:
             self._update_call_log(error_type=e.__class__.__name__, error_message=f"upstream error: {e}")
             self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
