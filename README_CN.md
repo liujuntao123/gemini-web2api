@@ -15,6 +15,7 @@
 - SSE 流式输出
 - 可选 API Key 鉴权
 - 多种 Gemini Web 模型模式
+- 匿名纯文本上游请求，无需配置 Cookie
 - SQLite 持久化调用日志和 `/dashboard` 数据看板
 
 ## 快速开始
@@ -62,7 +63,7 @@ curl http://localhost:8081/v1/chat/completions \
 | `gemini-3.5-flash` | 快速默认模型 |
 | `gemini-3.5-flash-thinking` | 更长输出，深度思考模式 |
 | `gemini-3.5-flash-thinking-lite` | 较轻的思考模式 |
-| `gemini-3.1-pro` | Pro 标签，真实路由可能需要 cookie |
+| `gemini-3.1-pro` | Pro 模型标签 |
 | `gemini-auto` | Gemini Web 自动模式 |
 | `gemini-flash-lite` | 轻量快速模式 |
 
@@ -83,11 +84,8 @@ gemini-3.5-flash-thinking@think=4
   "port": 8081,
   "host": "0.0.0.0",
   "max_request_body_bytes": 52428800,
-  "current_input_file_enabled": true,
-  "current_input_file_min_bytes": 95000,
-  "current_input_file_name": "message.txt",
+  "max_upstream_prompt_bytes": 184320,
   "api_keys": ["sk-your-key"],
-  "cookie_file": null,
   "proxy": null,
   "log_requests": true,
   "analytics_enabled": true,
@@ -100,10 +98,9 @@ gemini-3.5-flash-thinking@think=4
 - `api_keys` 设为 `[]` 时关闭鉴权。
 - 配置 key 后，`/v1/*` 接口需要 `Authorization: Bearer <key>`。
 - 无法访问 `gemini.google.com` 时设置 `proxy`。
-- 如需提高真实 Pro 路由概率，可设置 `cookie_file` 指向 cookie 文件。文件内容可以是裸 Cookie header value、`Cookie: ...` 单行、整段请求 headers，或包含 `cookie`/`headers` 的 JSON。
-- 上游 cookie 模式会按请求自动选择：小尺寸纯文本请求不带 Cookie/Authorization；文件、图片上传和大上下文文件引用请求会带 Cookie/Authorization。
-- 文件上传、图片上传和大 prompt 转附件模式都需要配置 `cookie_file`。
-- `current_input_file_enabled` 默认开启。当结构化聊天/历史请求超过 `current_input_file_min_bytes` 且 `cookie_file` 可用时，历史上下文会作为 `current_input_file_name` 上传并绑定到 Gemini Web 文件引用，最新用户输入保留在正文中。
+- 上游请求固定为匿名纯文本请求，不支持 Cookie 模式。
+- 图片和文件输入会直接返回 `400`。
+- Gemini Web 表单 payload 超过 `max_upstream_prompt_bytes` 的 prompt 会直接返回 `413`。
 
 ## 调用看板
 
@@ -144,6 +141,7 @@ http://localhost:18081/dashboard
 ```
 
 `docker-compose.yml` 会把宿主机 `./data` 挂载到容器 `/app/data`，调用日志在容器重建后仍会保留。
+不会挂载也不支持 Cookie 文件；Docker 与本地运行一样使用匿名纯文本上游模式。
 
 指定镜像标签：
 
@@ -178,8 +176,7 @@ gemini
 - Gemini Web 行为可能变化，导致桥接失效。
 - 请求按单轮处理，多轮上下文需要放进 prompt。
 - 高频调用可能触发 Google 限流。
-- OpenAI `image_url`、Responses `input_file`、Google 原生 `inlineData` 和 Google 原生 HTTP `fileData` 会在配置 cookie 后通过 Gemini Web 上传。
-- 没有合适 cookie 时，Pro/Ultra 标签不一定代表真实上游 Pro/Ultra 路由。
+- 不支持 OpenAI `image_url`、Responses `input_file`、Google 原生 `inlineData` 和 Google 原生 HTTP `fileData` 输入。
 
 ## License
 

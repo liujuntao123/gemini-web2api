@@ -4,13 +4,11 @@ from io import BytesIO
 from gemini_web2api.config import CONFIG
 from gemini_web2api.server import (
     GeminiHandler,
+    UNSUPPORTED_ATTACHMENT_MESSAGE,
     _configured_api_keys,
     _json_object,
     _max_request_body_bytes,
     _max_upstream_prompt_bytes,
-    _prepare_openai_file_refs,
-    _prepare_file_refs,
-    _use_cookie_for_upstream,
     _upstream_prompt_size_error,
 )
 
@@ -29,10 +27,6 @@ def test_default_request_body_limit_is_documented_in_example():
 
     assert data["max_request_body_bytes"] == CONFIG["max_request_body_bytes"]
     assert data["max_upstream_prompt_bytes"] == CONFIG["max_upstream_prompt_bytes"]
-    assert data["current_input_file_enabled"] == CONFIG["current_input_file_enabled"]
-    assert data["current_input_file_min_bytes"] == CONFIG["current_input_file_min_bytes"]
-    assert data["current_input_file_name"] == CONFIG["current_input_file_name"]
-    assert data["current_input_file_prompt"] == CONFIG["current_input_file_prompt"]
     assert data["analytics_enabled"] == CONFIG["analytics_enabled"]
     assert data["analytics_db_path"] == CONFIG["analytics_db_path"]
 
@@ -89,71 +83,6 @@ def test_upstream_prompt_size_error_allows_small_payload(monkeypatch):
     assert _upstream_prompt_size_error("hello", 2, 0) is None
 
 
-def test_prepare_file_refs_does_not_upload_prompt_without_history_context(monkeypatch):
-    monkeypatch.setitem(CONFIG, "current_input_file_enabled", True)
-    monkeypatch.setitem(CONFIG, "current_input_file_min_bytes", 5)
-    monkeypatch.setitem(CONFIG, "current_input_file_name", "message.txt")
-    monkeypatch.setitem(CONFIG, "current_input_file_prompt", "Please analyze the attached file.")
-    monkeypatch.setattr("gemini_web2api.server.has_cookie", lambda: True)
-    prompt, file_refs = _prepare_file_refs("hello world")
-
-    assert prompt == "hello world"
-    assert file_refs is None
-
-
-def test_prepare_file_refs_notes_missing_cookie_for_attachment(monkeypatch):
-    monkeypatch.setattr("gemini_web2api.server.has_cookie", lambda: False)
-
-    prompt, file_refs = _prepare_file_refs(
-        "look",
-        [{"data": b"hi", "mime_type": "image/png", "name": "image.png"}],
-    )
-
-    assert "requires cookie_file" in prompt
-    assert file_refs is None
-
-
-def test_prepare_openai_file_refs_uploads_history_and_keeps_latest(monkeypatch):
-    uploads = []
-    monkeypatch.setitem(CONFIG, "current_input_file_enabled", True)
-    monkeypatch.setitem(CONFIG, "current_input_file_min_bytes", 5)
-    monkeypatch.setitem(CONFIG, "current_input_file_name", "message.txt")
-    monkeypatch.setitem(CONFIG, "current_input_file_prompt", "Please analyze the attached file.")
-    monkeypatch.setattr("gemini_web2api.server.has_cookie", lambda: True)
-
-    def fake_upload(text, filename):
-        uploads.append((filename, text))
-        return {"ref": f"/contrib_service/ttl_1d/{filename}", "name": filename}
-
-    monkeypatch.setattr("gemini_web2api.server.upload_text_file", fake_upload)
-    messages = [
-        {"role": "system", "content": "be concise"},
-        {"role": "user", "content": "old context " * 20},
-        {"role": "assistant", "content": "ok"},
-        {"role": "user", "content": "what is the summary?"},
-    ]
-
-    prompt, file_refs = _prepare_openai_file_refs(
-        "old context " * 20 + "\n\nwhat is the summary?",
-        [],
-        messages,
-        None,
-        "auto",
-    )
-
-    assert uploads[0][0] == "message.txt"
-    assert "old context" in uploads[0][1]
-    assert "Latest user request" in prompt
-    assert "what is the summary?" in prompt
-    assert file_refs == [{"ref": "/contrib_service/ttl_1d/message.txt", "name": "message.txt"}]
-
-
-def test_use_cookie_for_upstream_only_when_files_are_bound():
-    assert _use_cookie_for_upstream(None) is False
-    assert _use_cookie_for_upstream([]) is False
-    assert _use_cookie_for_upstream([{"ref": "/contrib_service/ttl_1d/file", "name": "file.txt"}]) is True
-
-
 class _DummyHandler(GeminiHandler):
     def __init__(self):
         self.headers = {}
@@ -179,47 +108,64 @@ def test_chat_small_text_uses_anonymous_upstream(monkeypatch):
         "messages": [{"role": "user", "content": "hello"}],
     }).encode()
 
-    def fake_generate(prompt, model_id, think_mode, file_refs=None, extra_fields=None, use_cookie=True):
-        calls.append({"prompt": prompt, "file_refs": file_refs, "use_cookie": use_cookie})
+    def fake_generate(prompt, model_id, think_mode, extra_fields=None):
+        calls.append({"prompt": prompt})
         return "hi"
 
     monkeypatch.setattr("gemini_web2api.server.generate", fake_generate)
 
     handler._handle_chat(body, "req")
 
-    assert calls[0]["file_refs"] is None
-    assert calls[0]["use_cookie"] is False
+    assert handler._call_log["upstream_mode"] == "anonymous"
     assert handler.responses[0][0] == 200
 
 
-def test_chat_large_context_uses_cookie_upstream(monkeypatch):
+def test_chat_rejects_attachment(monkeypatch):
     calls = []
     handler = _DummyHandler()
     body = json.dumps({
         "model": "gemini-3.5-flash",
         "messages": [
-            {"role": "user", "content": "old context " * 20},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "summarize"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGk="}},
+                ],
+            },
         ],
     }).encode()
 
-    monkeypatch.setitem(CONFIG, "current_input_file_enabled", True)
-    monkeypatch.setitem(CONFIG, "current_input_file_min_bytes", 5)
-    monkeypatch.setattr("gemini_web2api.server.has_cookie", lambda: True)
-    monkeypatch.setattr(
-        "gemini_web2api.server.upload_text_file",
-        lambda text, filename: {"ref": f"/contrib_service/ttl_1d/{filename}", "name": filename},
-    )
-
-    def fake_generate(prompt, model_id, think_mode, file_refs=None, extra_fields=None, use_cookie=True):
-        calls.append({"prompt": prompt, "file_refs": file_refs, "use_cookie": use_cookie})
+    def fake_generate(prompt, model_id, think_mode, extra_fields=None):
+        calls.append(prompt)
         return "done"
 
     monkeypatch.setattr("gemini_web2api.server.generate", fake_generate)
 
     handler._handle_chat(body, "req")
 
-    assert calls[0]["file_refs"]
-    assert calls[0]["use_cookie"] is True
-    assert handler.responses[0][0] == 200
+    assert calls == []
+    assert handler.responses[0][0] == 400
+    assert handler.responses[0][1]["error"]["message"] == UNSUPPORTED_ATTACHMENT_MESSAGE
+
+
+def test_chat_large_prompt_returns_413_before_upstream(monkeypatch):
+    calls = []
+    handler = _DummyHandler()
+    body = json.dumps({
+        "model": "gemini-3.5-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }).encode()
+    monkeypatch.setitem(CONFIG, "max_upstream_prompt_bytes", 100)
+
+    def fake_generate(prompt, model_id, think_mode, extra_fields=None):
+        calls.append(prompt)
+        return "done"
+
+    monkeypatch.setattr("gemini_web2api.server.generate", fake_generate)
+
+    handler._handle_chat(body, "req")
+
+    assert calls == []
+    assert handler.responses[0][0] == 413
+    assert handler.responses[0][1]["error"]["message"] == "prompt too large for Gemini Web upstream"

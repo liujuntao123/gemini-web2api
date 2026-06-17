@@ -276,33 +276,11 @@ def _filename_from_url(url: str, default: str) -> str:
 
 def _append_input_file(attachments: list, item: dict, text_parts: list):
     file_value = item.get("file") if isinstance(item.get("file"), dict) else item
-    filename = file_value.get("filename") or file_value.get("name") or "file"
-    mime_type = file_value.get("mime_type") or file_value.get("mimeType") or "application/octet-stream"
-    file_data = file_value.get("file_data") or file_value.get("data")
-    file_url = file_value.get("file_url") or file_value.get("url")
-
-    if file_data:
-        parsed = parse_data_url(file_data)
-        if parsed:
-            parsed["name"] = filename
-            if not file_value.get("mime_type") and not file_value.get("mimeType"):
-                mime_type = parsed["mime_type"]
-            parsed["mime_type"] = mime_type
-            attachments.append(parsed)
-            return
-        try:
-            attachments.append({
-                "data": base64.b64decode(file_data, validate=True),
-                "mime_type": mime_type,
-                "name": filename,
-            })
-            return
-        except (binascii.Error, ValueError, TypeError):
-            pass
-    if file_url and re.match(r"^https?://", file_url, re.IGNORECASE):
-        attachments.append({"url": file_url, "mime_type": mime_type, "name": filename})
-        return
-    text_parts.append("[Note: Invalid file input was ignored.]")
+    attachments.append({
+        "type": "file",
+        "mime_type": file_value.get("mime_type") or file_value.get("mimeType") or "application/octet-stream",
+        "name": file_value.get("filename") or file_value.get("name") or "file",
+    })
 
 
 def _content_list_to_text_and_attachments(content: list, image_note: bool = False) -> tuple:
@@ -315,35 +293,14 @@ def _content_list_to_text_and_attachments(content: list, image_note: bool = Fals
         if ctype in ("text", "input_text"):
             text_parts.append(c.get("text", ""))
         elif ctype in ("image_url", "input_image"):
-            url = None
-            if isinstance(c.get("image_url"), dict):
-                url = c["image_url"].get("url")
-            elif isinstance(c.get("image_url"), str):
-                url = c.get("image_url")
-            else:
-                url = c.get("image_url") or c.get("image_url_data") or c.get("url")
-            image = parse_image_url(url)
-            if image:
-                attachments.append(image)
-            elif image_note:
-                text_parts.append("[Note: Invalid image input was ignored.]")
+            attachments.append({"type": "image", "mime_type": "image/png", "name": "image.png"})
         elif ctype in ("image", "input_file", "file"):
             if ctype == "image":
-                data = c.get("data") or c.get("image")
-                mime_type = c.get("mime_type") or c.get("mimeType") or "image/png"
-                parsed = parse_data_url(data)
-                if parsed:
-                    parsed["name"] = "image.png"
-                    attachments.append(parsed)
-                elif data:
-                    try:
-                        attachments.append({
-                            "data": base64.b64decode(data, validate=True),
-                            "mime_type": mime_type,
-                            "name": "image.png",
-                        })
-                    except (binascii.Error, ValueError, TypeError):
-                        text_parts.append("[Note: Invalid image input was ignored.]")
+                attachments.append({
+                    "type": "image",
+                    "mime_type": c.get("mime_type") or c.get("mimeType") or "image/png",
+                    "name": "image.png",
+                })
             else:
                 _append_input_file(attachments, c, text_parts)
     return "\n".join(text_parts), attachments
@@ -523,23 +480,16 @@ def google_contents_to_prompt(req: dict) -> tuple:
                 msg_parts.append(p["text"])
             elif p.get("inlineData"):
                 data = p["inlineData"]
-                mime = data.get("mimeType", "image/png")
-                try:
-                    attachments.append({
-                        "data": base64.b64decode(data["data"], validate=True),
-                        "mime_type": mime,
-                        "name": "image.png" if mime.startswith("image/") else "file",
-                    })
-                except (KeyError, TypeError, binascii.Error, ValueError):
-                    msg_parts.append("[Note: Invalid image input was ignored.]")
+                mime = data.get("mimeType", "image/png") if isinstance(data, dict) else "image/png"
+                attachments.append({
+                    "type": "image" if mime.startswith("image/") else "file",
+                    "mime_type": mime,
+                    "name": "image.png" if mime.startswith("image/") else "file",
+                })
             elif p.get("fileData"):
-                file_data = p["fileData"]
-                uri = file_data.get("fileUri") or file_data.get("uri")
+                file_data = p["fileData"] if isinstance(p["fileData"], dict) else {}
                 mime = file_data.get("mimeType") or "application/octet-stream"
-                if uri and re.match(r"^https?://", uri, re.IGNORECASE):
-                    attachments.append({"url": uri, "mime_type": mime, "name": file_data.get("displayName") or "file"})
-                else:
-                    msg_parts.append("[Note: Invalid file input was ignored.]")
+                attachments.append({"type": "file", "mime_type": mime, "name": file_data.get("displayName") or "file"})
             elif p.get("functionCall"):
                 fc = p["functionCall"]
                 msg_parts.append(

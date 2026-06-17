@@ -503,7 +503,7 @@ def dashboard_html() -> str:
       <article class="panel">
         <div class="panel-head">
           <div class="panel-title">上游模式</div>
-          <div class="panel-note">匿名、Cookie 与附件引用</div>
+          <div class="panel-note">匿名纯文本调用</div>
         </div>
         <div class="panel-body">
           <div id="upstreamChart" class="chart sm" role="img" aria-label="上游模式图"></div>
@@ -541,7 +541,6 @@ def dashboard_html() -> str:
               <th>模型</th>
               <th>API</th>
               <th>模式</th>
-              <th class="num">文件</th>
               <th>接口</th>
               <th class="num">耗时</th>
               <th class="num">Token</th>
@@ -667,15 +666,12 @@ def dashboard_html() -> str:
       const promptTokens = Number(summary.prompt_tokens || 0);
       const completionTokens = Number(summary.completion_tokens || 0);
       const anonymousCalls = Number(summary.anonymous_calls || 0);
-      const cookieCalls = Number(summary.cookie_calls || 0);
-      const fileRefCalls = Number(summary.file_ref_calls || 0);
-      const totalFileRefs = Number(summary.total_file_refs || 0);
       const rate = successPct(ok, total);
       const outputShare = tokens ? Math.round((completionTokens / tokens) * 100) : 0;
 
       els.totalWindow.textContent = "最近 " + els.days.value + " 天";
       els.totalCalls.textContent = fmt.format(total);
-      els.totalCallsSub.textContent = total ? "匿名 " + fmt.format(anonymousCalls) + ", Cookie " + fmt.format(cookieCalls) : "当前筛选范围无调用";
+      els.totalCallsSub.textContent = total ? "匿名 " + fmt.format(anonymousCalls) : "当前筛选范围无调用";
       els.totalMeter.style.width = total ? "100%" : "0%";
 
       els.successRate.textContent = formatPct(rate);
@@ -691,7 +687,7 @@ def dashboard_html() -> str:
 
       els.totalTokens.textContent = fmt.format(tokens);
       els.tokenBadge.textContent = outputShare ? "输出 " + outputShare + "%" : "输入/输出";
-      els.tokenSub.textContent = "输入 " + fmt.format(promptTokens) + ", 输出 " + fmt.format(completionTokens) + ", 文件 " + fmt.format(totalFileRefs);
+      els.tokenSub.textContent = "输入 " + fmt.format(promptTokens) + ", 输出 " + fmt.format(completionTokens);
       els.tokenMeter.style.width = Math.max(0, Math.min(100, outputShare)) + "%";
     }
 
@@ -972,7 +968,6 @@ def dashboard_html() -> str:
     }
 
     function upstreamLabel(mode) {
-      if (mode === "cookie") return "Cookie";
       if (mode === "anonymous") return "匿名";
       return "未发送";
     }
@@ -992,7 +987,6 @@ def dashboard_html() -> str:
         name: upstreamLabel(r.upstream_mode),
         value: Number(r.calls || 0),
         mode: r.upstream_mode,
-        fileRefs: Number(r.file_refs || 0),
         errors: Number(r.error_calls || 0)
       }));
       chart.setOption({
@@ -1022,7 +1016,7 @@ def dashboard_html() -> str:
         els.upstreamList.insertAdjacentHTML("beforeend",
           '<div class="split-row">' +
           '<div class="split-name">' + escapeHtml(r.name) + '</div>' +
-          '<div class="split-meta">' + fmt.format(r.value) + ' 次 · 文件引用 ' + fmt.format(r.fileRefs) + '</div>' +
+          '<div class="split-meta">' + fmt.format(r.value) + ' 次 · 失败 ' + fmt.format(r.errors) + '</div>' +
           '</div>'
         );
       });
@@ -1048,15 +1042,13 @@ def dashboard_html() -> str:
         const endpoint = item.endpoint || "";
         const err = item.error_type || item.error_message || "";
         const mode = item.upstream_mode || "not_sent";
-        const fileRefs = Number(item.file_ref_count || 0);
         els.logsBody.insertAdjacentHTML("beforeend",
           '<tr class="' + (ok ? "" : "error-row") + '">' +
           '<td class="mono">' + escapeHtml(date) + '</td>' +
           '<td><span class="badge ' + (ok ? "ok" : "err") + '">' + (ok ? "成功" : "失败") + '</span></td>' +
           '<td><div class="truncate" title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</div></td>' +
           '<td><span class="badge">' + escapeHtml(item.api_type || "") + '</span></td>' +
-          '<td><span class="badge ' + (mode === "cookie" ? "ok" : "") + '">' + escapeHtml(upstreamLabel(mode)) + '</span></td>' +
-          '<td class="num">' + fmt.format(fileRefs) + '</td>' +
+          '<td><span class="badge">' + escapeHtml(upstreamLabel(mode)) + '</span></td>' +
           '<td class="mono"><div class="truncate" title="' + escapeHtml(endpoint) + '">' + escapeHtml(endpoint) + '</div></td>' +
           '<td class="num">' + fmt.format(item.response_ms || 0) + 'ms</td>' +
           '<td class="num">' + fmt.format(item.total_tokens || 0) + '</td>' +

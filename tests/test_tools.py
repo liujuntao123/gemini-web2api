@@ -53,7 +53,7 @@ def test_invalid_google_function_call_block_preserves_text():
     assert calls == []
 
 
-def test_invalid_inline_data_becomes_prompt_note():
+def test_invalid_inline_data_becomes_attachment_marker():
     prompt, images = google_contents_to_prompt({
         "contents": [{
             "role": "user",
@@ -61,8 +61,8 @@ def test_invalid_inline_data_becomes_prompt_note():
         }],
     })
 
-    assert "Invalid image input was ignored" in prompt
-    assert images == []
+    assert prompt == ""
+    assert images == [{"type": "image", "mime_type": "image/png", "name": "image.png"}]
 
 
 def test_non_dict_content_parts_are_ignored():
@@ -86,7 +86,7 @@ def test_non_dict_messages_are_ignored():
     assert images == []
 
 
-def test_openai_image_url_data_becomes_attachment():
+def test_openai_image_url_data_becomes_attachment_marker():
     prompt, attachments = messages_to_prompt([{
         "role": "user",
         "content": [
@@ -96,10 +96,10 @@ def test_openai_image_url_data_becomes_attachment():
     }])
 
     assert prompt == "describe it"
-    assert attachments == [{"data": b"hi", "mime_type": "image/png", "name": "image.png"}]
+    assert attachments == [{"type": "image", "mime_type": "image/png", "name": "image.png"}]
 
 
-def test_openai_input_file_data_becomes_attachment():
+def test_openai_input_file_data_becomes_attachment_marker():
     prompt, attachments = messages_to_prompt([{
         "role": "user",
         "content": [{
@@ -111,10 +111,10 @@ def test_openai_input_file_data_becomes_attachment():
     }])
 
     assert prompt == ""
-    assert attachments == [{"data": b"hello", "mime_type": "text/plain", "name": "notes.txt"}]
+    assert attachments == [{"type": "file", "mime_type": "text/plain", "name": "notes.txt"}]
 
 
-def test_openai_input_file_nested_file_object_becomes_attachment():
+def test_openai_input_file_nested_file_object_becomes_attachment_marker():
     prompt, attachments = messages_to_prompt([{
         "role": "user",
         "content": [{
@@ -128,4 +128,4 @@ def test_openai_input_file_nested_file_object_becomes_attachment():
     }])
 
     assert prompt == ""
-    assert attachments == [{"data": b"hello", "mime_type": "text/plain", "name": "notes.txt"}]
+    assert attachments == [{"type": "file", "mime_type": "text/plain", "name": "notes.txt"}]

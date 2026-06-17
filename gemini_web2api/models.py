@@ -14,7 +14,7 @@ MODELS = {
     },
     "gemini-3.1-pro": {
         "mode": 3, "think": 4,
-        "desc": "Pro model (requires cookie for real routing)",
+        "desc": "Pro model label",
     },
     "gemini-3.1-pro-enhanced": {
         "mode": 3, "think": 4, "extra": {31: 2, 80: 3},

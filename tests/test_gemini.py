@@ -1,16 +1,12 @@
 import json
-import urllib.parse
-
 import pytest
 
 from gemini_web2api.gemini import (
     EmptyGeminiResponse,
     GeminiUpstreamError,
-    _append_page_token,
     _build_headers,
     _build_payload,
     extract_response_text,
-    parse_cookie_content,
 )
 
 
@@ -49,67 +45,18 @@ def test_extract_response_text_marks_1152_as_prompt_rejection():
         extract_response_text(raw)
 
 
-def test_build_payload_uses_gemini_file_ref_shape():
-    body = _build_payload(
-        "please analyze attachment",
-        2,
-        0,
-        [{"ref": "/contrib_service/ttl_1d/abc", "name": "message.txt", "mime_type": "text/plain; charset=utf-8"}],
-    )
+def test_build_payload_is_text_only():
+    import urllib.parse
+
+    body = _build_payload("plain text only", 2, 0)
     outer = json.loads(urllib.parse.parse_qs(body)["f.req"][0])
     inner = json.loads(outer[1])
 
-    assert inner[0][3] == [[["/contrib_service/ttl_1d/abc", 1], "message.txt"]]
+    assert inner[0] == ["plain text only", 0, None, None, None, None, 0]
 
 
-def test_parse_cookie_content_accepts_raw_cookie_header_value():
-    cookie, sapisid = parse_cookie_content("SAPISID=abc/def; NID=123")
-
-    assert cookie == "SAPISID=abc/def; NID=123"
-    assert sapisid == "abc/def"
-
-
-def test_parse_cookie_content_accepts_cookie_header_line():
-    cookie, sapisid = parse_cookie_content("Cookie: __Secure-3PAPISID=secure; NID=123")
-
-    assert cookie == "__Secure-3PAPISID=secure; NID=123"
-    assert sapisid == "secure"
-
-
-def test_parse_cookie_content_accepts_full_header_block():
-    cookie, sapisid = parse_cookie_content(
-        "User-Agent: Mozilla/5.0\n"
-        "Accept: */*\n"
-        "Cookie: AEC=x; SAPISID=header_sapisid; SID=s\n"
-        "Authorization: SAPISIDHASH 1_deadbeef\n"
-    )
-
-    assert cookie == "AEC=x; SAPISID=header_sapisid; SID=s"
-    assert sapisid == "header_sapisid"
-
-
-def test_parse_cookie_content_accepts_json_headers_string():
-    cookie, sapisid = parse_cookie_content(
-        json.dumps({"headers": "Cookie: __Secure-1PAPISID=json_secure; SID=s"})
-    )
-
-    assert cookie == "__Secure-1PAPISID=json_secure; SID=s"
-    assert sapisid == "json_secure"
-
-
-def test_build_headers_can_skip_cookie(monkeypatch):
-    monkeypatch.setattr("gemini_web2api.gemini.load_cookie", lambda: ("SAPISID=secret", "secret"))
-
-    headers = _build_headers(use_cookie=False)
+def test_build_headers_never_include_cookie_auth():
+    headers = _build_headers()
 
     assert "Cookie" not in headers
     assert "Authorization" not in headers
-
-
-def test_append_page_token_can_skip_cookie(monkeypatch):
-    def fail_load_cookie():
-        raise AssertionError("load_cookie should not be called")
-
-    monkeypatch.setattr("gemini_web2api.gemini.load_cookie", fail_load_cookie)
-
-    assert _append_page_token("f.req=x", use_cookie=False) == "f.req=x"

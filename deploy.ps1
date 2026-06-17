@@ -12,10 +12,8 @@ if (-not (Test-Path -Path "config.json")) {
     Write-Host "Created config.json from config.example.json"
 }
 
-if (-not (Test-Path -Path "cookie.txt")) {
-    New-Item -Path "cookie.txt" -ItemType File | Out-Null
-}
-
 $env:HOST_PORT = $Port
 docker compose up -d --build
 Write-Host "gemini-web2api is running at http://localhost:$Port/v1"
+Write-Host "Dashboard: http://localhost:$Port/dashboard"
+Write-Host "Upstream: anonymous text-only; Cookie and file/image inputs are not supported"

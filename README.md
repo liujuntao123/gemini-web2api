@@ -15,6 +15,7 @@ Convert Google Gemini Web into an OpenAI-compatible local API. It supports Chat 
 - Streaming SSE responses
 - Optional API key protection
 - Multiple Gemini Web model modes
+- Anonymous text-only upstream requests; no Cookie setup
 - Persistent SQLite call logs and `/dashboard` usage analytics
 
 ## Quick Start
@@ -62,7 +63,7 @@ curl http://localhost:8081/v1/chat/completions \
 | `gemini-3.5-flash` | fast default model |
 | `gemini-3.5-flash-thinking` | longer output, deeper reasoning mode |
 | `gemini-3.5-flash-thinking-lite` | lighter thinking mode |
-| `gemini-3.1-pro` | Pro label, real routing may require cookies |
+| `gemini-3.1-pro` | Pro model label |
 | `gemini-auto` | Gemini Web auto mode |
 | `gemini-flash-lite` | lightweight fast mode |
 
@@ -83,11 +84,8 @@ Create `config.json` from `config.example.json` and edit as needed:
   "port": 8081,
   "host": "0.0.0.0",
   "max_request_body_bytes": 52428800,
-  "current_input_file_enabled": true,
-  "current_input_file_min_bytes": 95000,
-  "current_input_file_name": "message.txt",
+  "max_upstream_prompt_bytes": 184320,
   "api_keys": ["sk-your-key"],
-  "cookie_file": null,
   "proxy": null,
   "log_requests": true,
   "analytics_enabled": true,
@@ -100,10 +98,9 @@ Notes:
 - Set `api_keys` to `[]` to disable authentication.
 - `/v1/*` endpoints require `Authorization: Bearer <key>` when keys are configured.
 - Set `proxy` if your machine cannot access `gemini.google.com`.
-- Optional cookie support can improve real Pro routing: set `cookie_file` to a cookie file path. The file may contain a raw Cookie header value, a `Cookie: ...` line, a pasted full request header block, or JSON with `cookie`/`headers`.
-- Upstream cookie mode is selected per request. Small text-only prompts are sent without Cookie/Authorization headers. File/image uploads and large-context file references are sent with Cookie/Authorization headers.
-- File upload, image upload, and large prompt attachment mode require `cookie_file`.
-- `current_input_file_enabled` is enabled by default. When a structured chat/history request exceeds `current_input_file_min_bytes` and `cookie_file` is available, prior context is uploaded as `current_input_file_name` and bound to Gemini Web as a file reference while the latest user turn stays inline.
+- Upstream requests are anonymous text-only requests. Cookie mode is not supported.
+- Image/file inputs are rejected with `400`.
+- Prompts whose Gemini Web form payload exceeds `max_upstream_prompt_bytes` are rejected with `413`.
 
 ## Usage Dashboard
 
@@ -144,6 +141,7 @@ http://localhost:18081/dashboard
 ```
 
 `docker-compose.yml` mounts `./data` to `/app/data`, so usage logs persist across container rebuilds.
+No Cookie file is mounted or supported; Docker uses the same anonymous text-only upstream mode.
 
 To use a specific image tag:
 
@@ -178,8 +176,7 @@ Supported native endpoints:
 - Gemini Web behavior can change and may break this bridge.
 - Requests are single-turn; multi-turn context is passed in the prompt.
 - Google may rate-limit high-frequency use.
-- OpenAI `image_url`, Responses `input_file`, Google native `inlineData`, and Google native HTTP `fileData` inputs are uploaded through Gemini Web when cookies are configured.
-- Without suitable cookies, Pro/Ultra labels may not mean real upstream Pro/Ultra routing.
+- OpenAI `image_url`, Responses `input_file`, Google native `inlineData`, and Google native HTTP `fileData` inputs are not supported.
 
 ## License
 

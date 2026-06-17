@@ -11,8 +11,6 @@ _INIT_LOCK = threading.Lock()
 _INITIALIZED_PATHS = set()
 _REQUIRED_COLUMNS = {
     "upstream_mode": "TEXT",
-    "upstream_cookie": "INTEGER",
-    "file_ref_count": "INTEGER",
 }
 
 
@@ -81,8 +79,6 @@ def init_db() -> None:
                     image_count INTEGER,
                     tool_count INTEGER,
                     upstream_mode TEXT,
-                    upstream_cookie INTEGER,
-                    file_ref_count INTEGER,
                     error_type TEXT,
                     error_message TEXT,
                     client_host TEXT,
@@ -137,11 +133,7 @@ def record_call(data: Dict[str, Any]) -> bool:
             success = bool(status_code is not None and 200 <= int(status_code) < 400)
         else:
             success = bool(data.get("success"))
-        upstream_cookie = data.get("upstream_cookie")
-        if upstream_cookie is None:
-            upstream_mode = data.get("upstream_mode")
-        else:
-            upstream_mode = "cookie" if upstream_cookie else "anonymous"
+        upstream_mode = data.get("upstream_mode")
         row = {
             "request_id": str(data.get("request_id") or ""),
             "created_at": created_at,
@@ -163,8 +155,6 @@ def record_call(data: Dict[str, Any]) -> bool:
             "image_count": data.get("image_count"),
             "tool_count": data.get("tool_count"),
             "upstream_mode": _truncate(upstream_mode, 40),
-            "upstream_cookie": None if upstream_cookie is None else (1 if upstream_cookie else 0),
-            "file_ref_count": data.get("file_ref_count"),
             "error_type": _truncate(data.get("error_type"), 120),
             "error_message": _truncate(data.get("error_message"), 500),
             "client_host": _truncate(data.get("client_host"), 120),
@@ -177,15 +167,13 @@ def record_call(data: Dict[str, Any]) -> bool:
                     request_id, created_at, created_at_ts, method, endpoint, api_type,
                     model, stream, status_code, success, response_ms, request_bytes,
                     prompt_chars, response_chars, prompt_tokens, completion_tokens,
-                    total_tokens, image_count, tool_count, upstream_mode, upstream_cookie,
-                    file_ref_count, error_type, error_message,
+                    total_tokens, image_count, tool_count, upstream_mode, error_type, error_message,
                     client_host, user_agent
                 ) VALUES (
                     :request_id, :created_at, :created_at_ts, :method, :endpoint, :api_type,
                     :model, :stream, :status_code, :success, :response_ms, :request_bytes,
                     :prompt_chars, :response_chars, :prompt_tokens, :completion_tokens,
-                    :total_tokens, :image_count, :tool_count, :upstream_mode, :upstream_cookie,
-                    :file_ref_count, :error_type, :error_message,
+                    :total_tokens, :image_count, :tool_count, :upstream_mode, :error_type, :error_message,
                     :client_host, :user_agent
                 )
                 """,
@@ -278,7 +266,7 @@ def query_logs(params: Dict[str, Any]) -> Dict[str, Any]:
             SELECT id, request_id, created_at, method, endpoint, api_type, model, stream,
                    status_code, success, response_ms, request_bytes, prompt_chars,
                    response_chars, prompt_tokens, completion_tokens, total_tokens,
-                   image_count, tool_count, upstream_mode, upstream_cookie, file_ref_count,
+                   image_count, tool_count, upstream_mode,
                    error_type, error_message, client_host, user_agent
             FROM api_call_logs
             {where}
@@ -292,8 +280,6 @@ def query_logs(params: Dict[str, Any]) -> Dict[str, Any]:
         item = dict(row)
         item["stream"] = bool(item["stream"])
         item["success"] = bool(item["success"])
-        if item.get("upstream_cookie") is not None:
-            item["upstream_cookie"] = bool(item["upstream_cookie"])
         logs.append(item)
     return {"enabled": True, "logs": logs, "limit": limit, "offset": offset, "total": total}
 
@@ -317,10 +303,7 @@ def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
                        COALESCE(SUM(total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-                       COALESCE(SUM(CASE WHEN upstream_mode = 'cookie' THEN 1 ELSE 0 END), 0) AS cookie_calls,
-                       COALESCE(SUM(CASE WHEN upstream_mode = 'anonymous' THEN 1 ELSE 0 END), 0) AS anonymous_calls,
-                       COALESCE(SUM(CASE WHEN COALESCE(file_ref_count, 0) > 0 THEN 1 ELSE 0 END), 0) AS file_ref_calls,
-                       COALESCE(SUM(file_ref_count), 0) AS total_file_refs
+                       COALESCE(SUM(CASE WHEN upstream_mode = 'anonymous' THEN 1 ELSE 0 END), 0) AS anonymous_calls
                 FROM api_call_logs
                 {where}
                 """,
@@ -387,7 +370,6 @@ def usage_stats(params: Dict[str, Any]) -> Dict[str, Any]:
                        COUNT(*) AS calls,
                        COALESCE(SUM(success), 0) AS success_calls,
                        COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS error_calls,
-                       COALESCE(SUM(file_ref_count), 0) AS file_refs,
                        COALESCE(ROUND(AVG(response_ms), 2), 0) AS avg_response_ms
                 FROM api_call_logs
                 {where}
